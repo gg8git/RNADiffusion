@@ -29,7 +29,7 @@ class Wrapper(L.LightningModule):
         self.model: RNAVAE = torch.compile(RNAVAE(config))
 
     def training_step(self, batch: Tensor, batch_idx: int) -> Tensor:
-        elbo, stats = self.model(batch)
+        elbo, stats = self.model(batch[0])
 
         stats = {f"train/{k}": v for k, v in stats.items()}
 
@@ -38,7 +38,7 @@ class Wrapper(L.LightningModule):
         return elbo
 
     def validation_step(self, batch: Tensor, batch_idx: int) -> Tensor:
-        elbo, stats = self.model(batch)
+        elbo, stats = self.model(batch[0])
 
         stats = {f"val/{k}": v for k, v in stats.items()}
         self.log_dict(stats, prog_bar=True, sync_dist=True)
@@ -67,8 +67,11 @@ class Wrapper(L.LightningModule):
 
 
 def main(beta: float = 0.1):
+    data_dir = "/home/diwu/project/CIS800/RNADiffusion/data/pretrain"
+
     dm = VAEDataModule(
-        batch_size=256,
+        data_dir,
+        batch_size=128,
         num_workers=16,
     )
 
@@ -80,7 +83,7 @@ def main(beta: float = 0.1):
         wd=0.01,
         n_layers=8,
         n_bn=8,
-        zdim=16,
+        zdim=32,
         lr=1e-3,
     )
 
@@ -99,7 +102,6 @@ def main(beta: float = 0.1):
         precision="bf16-mixed",
         gradient_clip_val=5.0,
         num_sanity_val_steps=0,
-        accumulate_grad_batches=2,
     )
 
     trainer.fit(model, datamodule=dm)

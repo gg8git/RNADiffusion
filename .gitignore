@@ -160,3 +160,5 @@ cython_debug/
 #.idea/
 
 wandb
+RNA_Diffusion
+data/pretrain

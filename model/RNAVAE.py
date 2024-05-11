@@ -135,13 +135,16 @@ class RNAVAE(L.LightningModule):
     @property
     def stop_idx(self):
         return self.config.vocab["[STOP]"]
+    
+    @property
+    def unk_idx(self):
+        return self.config.vocab["[UNK]"]
 
 
 class Encoder(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
-
         self.embed = nn.Embedding(
             len(config.vocab), config.d_model, padding_idx=config.vocab["[PAD]"]
         )
@@ -312,6 +315,4 @@ def get_config(*args, **kwargs) -> Config:
     if len(args) == 1 and isinstance(args[0], Config):
         return args[0]
     if "config" in kwargs:
-        return kwargs["config"]
-    # Otherwise construct a new config object
-    return Config(*args, **kwargs)
+        return kwargs["config"

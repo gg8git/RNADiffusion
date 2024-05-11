@@ -32,8 +32,9 @@ Add whatever tokens are needed to `data/vocab.json`. I imagine it will look like
     "[START]": 0,
     "[STOP]": 1,
     "[PAD]": 2,
-    "A": 3,
-    "C": 4,
-    "G": 5,
-    "T": 6
+    "[UNK]": 3,
+    "A": 4,
+    "C": 5,
+    "G": 6,
+    "T": 7,
 }

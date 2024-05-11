@@ -315,4 +315,6 @@ def get_config(*args, **kwargs) -> Config:
     if len(args) == 1 and isinstance(args[0], Config):
         return args[0]
     if "config" in kwargs:
-        return kwargs["config"
+        return kwargs["config"]
+    # Otherwise construct a new config object
+    return Config(*args, **kwargs)

@@ -8,9 +8,9 @@ from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
 
 from data.vae_datamodule import VAEDataModule
-from model.RNAVAE import Config, RNAVAE
+from model.RNAVAE2 import Config, RNAVAE
 
-torch.set_float32_matmul_precision("medium")
+torch.set_float32_matmul_precision("high")
 
 torch._dynamo.config.cache_size_limit = 8192
 torch._dynamo.config.accumulated_cache_size_limit = 8192
@@ -29,7 +29,7 @@ class Wrapper(L.LightningModule):
         self.model: RNAVAE = torch.compile(RNAVAE(config))
 
     def training_step(self, batch: Tensor, batch_idx: int) -> Tensor:
-        elbo, stats = self.model(batch[0])
+        elbo, stats = self.model(batch)
 
         stats = {f"train/{k}": v for k, v in stats.items()}
 
@@ -38,7 +38,7 @@ class Wrapper(L.LightningModule):
         return elbo
 
     def validation_step(self, batch: Tensor, batch_idx: int) -> Tensor:
-        elbo, stats = self.model(batch[0])
+        elbo, stats = self.model(batch)
 
         stats = {f"val/{k}": v for k, v in stats.items()}
         self.log_dict(stats, prog_bar=True, sync_dist=True)
@@ -66,13 +66,13 @@ class Wrapper(L.LightningModule):
         opt.eval()
 
 
-def main(beta: float = 0.1):
+def main(beta: float = 0.02):
     data_dir = "/home/diwu/project/CIS800/RNADiffusion/data/pretrain"
 
     dm = VAEDataModule(
         data_dir,
         batch_size=128,
-        num_workers=16,
+        num_workers=0,
     )
 
     config = Config(
@@ -82,14 +82,14 @@ def main(beta: float = 0.1):
         beta=beta,
         wd=0.01,
         n_layers=8,
-        n_bn=8,
-        zdim=32,
+        n_bn=16,
+        zdim=16,
         lr=1e-3,
     )
 
     model = Wrapper(config)
 
-    logger = WandbLogger(project="RNA_Diffusion")
+    logger = WandbLogger(project="RNA_Diffusion", offline=False)
 
     check = ModelCheckpoint(every_n_train_steps=1024, save_top_k=-1, save_last=True)
     trainer = L.Trainer(
@@ -101,7 +101,9 @@ def main(beta: float = 0.1):
         inference_mode=True,
         precision="bf16-mixed",
         gradient_clip_val=5.0,
+        accumulate_grad_batches=4,
         num_sanity_val_steps=0,
+        check_val_every_n_epoch=100,
     )
 
     trainer.fit(model, datamodule=dm)

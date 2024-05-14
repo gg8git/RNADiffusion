@@ -1,7 +1,9 @@
-import json, os
+import json
+import os
+
 import lightning as L
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 
 
 class VAEDataModule(L.LightningDataModule):
@@ -15,19 +17,9 @@ class VAEDataModule(L.LightningDataModule):
         self.vocab = json.load(open("./data/vocab.json", "r"))
 
     def train_dataloader(self) -> DataLoader:
-        # Load the training dataset
-        train_file = os.path.join(self.data_dir, "train.tsv")
-        print(f"Loading training data from {train_file}")
-        train_data = []
-        with open(train_file) as f:
-            for line in f:
-                token = [self.vocab['[START]']] + [self.vocab.get(c, self.vocab['[UNK]']) for c in line.strip()] + [self.vocab['[STOP]']]
-                train_data.append(token)
-        train_data = torch.tensor(train_data, dtype=torch.long)
-        ds = TensorDataset(train_data)
-        print("Data Loaded")
+        train_data = torch.load(os.path.join(self.data_dir, "train.pt")).long()
         return DataLoader(
-            ds,
+            train_data,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
@@ -35,19 +27,9 @@ class VAEDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:
-        # Load the val dataset
-        val_file = os.path.join(self.data_dir, "test.tsv")
-        val_data = []
-        print(f"Loading validation data from {val_file}")
-        with open(val_file) as f:
-            for line in f:
-                token = [self.vocab['[START]']] + [self.vocab.get(c, self.vocab['[UNK]']) for c in line.strip()] + [self.vocab['[STOP]']]
-                val_data.append(token)
-        val_data = torch.tensor(val_data, dtype=torch.long)
-        ds = TensorDataset(val_data)
-        print("Data Loaded")
+        val_data = torch.load(os.path.join(self.data_dir, "val.pt")).long()
         return DataLoader(
-            ds,
+            val_data,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,

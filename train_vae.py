@@ -8,7 +8,7 @@ from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
 
 from data.vae_datamodule import VAEDataModule
-from model.RNAVAE2 import Config, RNAVAE
+from model.RNAVAE3 import Config, RNAVAE
 
 torch.set_float32_matmul_precision("high")
 
@@ -27,6 +27,9 @@ class Wrapper(L.LightningModule):
 
         self.config = config
         self.model: RNAVAE = torch.compile(RNAVAE(config))
+
+    def encode(self, tokens):
+        return self.model.encoder(tokens)
 
     def training_step(self, batch: Tensor, batch_idx: int) -> Tensor:
         elbo, stats = self.model(batch)
@@ -67,11 +70,11 @@ class Wrapper(L.LightningModule):
 
 
 def main(beta: float = 0.02):
-    data_dir = "/home/diwu/project/CIS800/RNADiffusion/data/pretrain"
+    data_dir = "./data/"
 
     dm = VAEDataModule(
         data_dir,
-        batch_size=128,
+        batch_size=512,
         num_workers=0,
     )
 
@@ -87,7 +90,9 @@ def main(beta: float = 0.02):
         lr=1e-3,
     )
 
-    model = Wrapper(config)
+    model = Wrapper.load_from_checkpoint(
+        "RNA_Diffusion/nb2skaky/checkpoints/last.ckpt", config=config
+    )
 
     logger = WandbLogger(project="RNA_Diffusion", offline=False)
 
@@ -101,7 +106,6 @@ def main(beta: float = 0.02):
         inference_mode=True,
         precision="bf16-mixed",
         gradient_clip_val=5.0,
-        accumulate_grad_batches=4,
         num_sanity_val_steps=0,
         check_val_every_n_epoch=100,
     )

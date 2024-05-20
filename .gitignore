@@ -165,3 +165,5 @@ data/pretrain
 data/*.pt
 data/high_PSI_data.tsv
 checkpoints/*.ckpt
+data/low_PSI_data.tsv
+data/low_psi_filter.tsv

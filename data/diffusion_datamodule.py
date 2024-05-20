@@ -1,3 +1,5 @@
+import random
+
 import lightning as L
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -19,31 +21,64 @@ class DiffusionDataModule(L.LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
+            drop_last=True,
         )
 
 
 class LatentDataset(Dataset):
     def __init__(self, data_dir: str) -> None:
-        data = torch.load(f"{data_dir}/latent.pt")
+        lm, ls = torch.load(f"{data_dir}/low.pt")
+        hm, hs = torch.load(f"{data_dir}/high.pt")
 
-        self.data = {
-            1: (data[0], data[1]),
-            2: (data[2], data[3]),
-            3: (data[4], data[5]),
-            4: (data[6], data[7]),
-        }
+        self.m = torch.cat(
+            [
+                lm,
+                hm,
+            ],
+            dim=0,
+        )
+        self.s = torch.cat(
+            [
+                ls,
+                hs,
+            ],
+            dim=0,
+        )
+        self.class_idx = torch.cat(
+            [
+                torch.zeros(len(lm)),
+                torch.ones(len(hm)),
+            ],
+            dim=0,
+        ).long()
 
     def __len__(self) -> int:
-        return len(self.data[1][0])
+        return len(self.m)
 
-    def get_single(self, col: int, idx: int):
-        loc, scale = self.data[col]
-        return loc[idx] + torch.randn_like(loc[idx]) * scale[idx]
+    def __getitem__(self, idx: int):
+        z = self.m[idx] + self.s[idx] * torch.randn_like(self.m[idx])
+        return z, self.class_idx[idx]
 
-    def __getitem__(self, idx: int) -> dict:
-        c1 = self.get_single(1, idx)
-        c2 = self.get_single(2, idx)
-        c3 = self.get_single(3, idx)
-        c4 = self.get_single(4, idx)
 
-        return torch.vstack([c1, c2, c3, c4])
+class LatentDatasetOverSample(Dataset):
+    def __init__(self, data_dir: str) -> None:
+        self.lm, self.ls = torch.load(f"{data_dir}/low.pt")
+        self.hm, self.hs = torch.load(f"{data_dir}/high.pt")
+
+    def __len__(self) -> int:
+        return len(self.lm) + len(self.hm)
+
+    def __getitem__(self, idx: int):
+        if random.random() < 0.5:
+            idx = random.randint(0, len(self.lm) - 1)
+            class_idx = 0
+            mu = self.lm[idx]
+            sigma = self.ls[idx]
+        else:
+            idx = random.randint(0, len(self.hm) - 1)
+            class_idx = 1
+            mu = self.hm[idx]
+            sigma = self.hs[idx]
+
+        z = mu + sigma * torch.randn_like(mu)
+        return z, torch.tensor(class_idx)

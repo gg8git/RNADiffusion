@@ -209,7 +209,7 @@ class GaussianDiffusion1D(nn.Module):
         rederive_pred_noise=False,
     ):
         assert (
-            class_labels is not None
+            class_labels is not None or not self.model.needs_class_labels
         ), "class_labels must be provided for model_predictions"
 
         model_output = self.model(x, t, x_self_cond, class_labels=class_labels)
@@ -268,7 +268,9 @@ class GaussianDiffusion1D(nn.Module):
 
     @torch.no_grad()
     def ddim_sample(self, shape, clip_denoised=True, class_labels=None):
-        assert class_labels is not None, "class_labels must be provided for sampling"
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for ddim_sample"
 
         batch, device, total_timesteps, sampling_timesteps, eta = (
             shape[0],
@@ -290,7 +292,9 @@ class GaussianDiffusion1D(nn.Module):
 
         x_start = None
 
-        for time, time_next in tqdm(time_pairs, desc="sampling loop time step"):
+        for time, time_next in tqdm(
+            time_pairs, desc="sampling loop time step", leave=False
+        ):
             time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
             pred_noise, x_start, *_ = self.model_predictions(
@@ -321,7 +325,9 @@ class GaussianDiffusion1D(nn.Module):
 
     @torch.no_grad()
     def sample(self, batch_size, class_labels: torch.Tensor = None):
-        assert class_labels is not None, "class_labels must be provided for sampling"
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for sampling"
 
         seq_length, channels = self.seq_length, self.channels
         return self.ddim_sample(
@@ -338,7 +344,9 @@ class GaussianDiffusion1D(nn.Module):
         )
 
     def p_losses(self, x_start, t, class_labels=None, noise=None):
-        assert class_labels is not None, "class_labels must be provided for p_losses"
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for p_losses"
 
         noise = default(noise, lambda: torch.randn_like(x_start))
 
@@ -377,7 +385,7 @@ class GaussianDiffusion1D(nn.Module):
         loss = loss * extract(self.loss_weight, t, loss.shape)
         return loss.mean()
 
-    def forward(self, img, class_labels):
+    def forward(self, img, class_labels=None):
         (
             b,
             _c,
@@ -386,7 +394,9 @@ class GaussianDiffusion1D(nn.Module):
             seq_length,
         ) = *img.shape, img.device, self.seq_length
         assert n == seq_length, f"seq length must be {seq_length}"
-        assert class_labels is not None, "class_labels must be provided for forward"
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided"
 
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
 

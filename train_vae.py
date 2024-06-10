@@ -8,9 +8,9 @@ from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
 
 from data.vae_datamodule import VAEDataModule
-from model.RNAVAE3 import Config, RNAVAE
+from model.RNAVAE import Config, RNAVAE
 
-torch.set_float32_matmul_precision("high")
+# torch.set_float32_matmul_precision("high")
 
 torch._dynamo.config.cache_size_limit = 8192
 torch._dynamo.config.accumulated_cache_size_limit = 8192
@@ -27,6 +27,9 @@ class Wrapper(L.LightningModule):
 
         self.config = config
         self.model: RNAVAE = torch.compile(RNAVAE(config))
+
+    def forward(self, z):
+        return self.model.decoder(z)
 
     def encode(self, tokens):
         return self.model.encoder(tokens)

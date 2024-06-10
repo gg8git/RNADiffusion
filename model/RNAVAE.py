@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple
 
 import hnn_utils.nn as hnn
 import hnn_utils.nn.functional as HNNF
@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.distributions import Categorical, Normal
+from torch.distributions import Normal
 
 
 @dataclass
@@ -48,61 +48,26 @@ class RNAVAE(L.LightningModule):
         self.reset_parameters()
 
     def forward(self, tokens: Tensor) -> Tuple[Tensor, Dict]:
+        # Pad with 4 stop tokens
+        tokens = F.pad(tokens, (0, 4), value=self.stop_idx)
+
         post: Normal = self.encoder(tokens)
         all_kl = HNNF.gaussian_kl_standard_normal(post.loc, post.scale)
         all_kl = all_kl * self.calc_kl_weights(all_kl)
 
         z = post.rsample()
 
-        logits = self.decoder(tokens, z)
+        logits = self.decoder(z)
 
-        nll = cross_entropy(logits[:, :-1], tokens[:, 1:], self.pad_idx)
+        nll = cross_entropy(logits, tokens)
         kl = all_kl.mean(dim=(1, 2))
 
-        stats = compute_stats(tokens, logits, post, self.pad_idx)
+        stats = compute_stats(tokens, logits, post)
 
         elbo = nll + kl
         elbo = elbo.mean()
 
         return elbo, stats
-
-    @torch.no_grad()
-    def sample(
-        self, z: torch.Tensor, argmax: bool = False, p: float = 1.0
-    ) -> List[Union[str, None]]:
-        tr = self.training
-        self.eval()
-
-        if z.ndim == 1:
-            z = z.unsqueeze(0)
-
-        N = z.shape[0]
-        z = z.reshape(N, -1, self.config.zdim).to(self.device, dtype=self.dtype)
-
-        tokens = torch.full(
-            (N, 1), self.start_idx, dtype=torch.long, device=self.device
-        )
-        while True:
-            logits = self.decoder(tokens, z)[:, -1:]
-            logits = logits / p  # Temperature scaling
-
-            dist = Categorical(logits=logits)
-
-            if argmax:
-                sampled = dist.mode
-            else:
-                sampled = dist.sample()
-
-            tokens = torch.cat([tokens, sampled], dim=-1)
-
-            if (
-                torch.any(tokens == self.stop_idx, dim=-1).all()
-                or tokens.shape[1] > 128
-            ):
-                break
-
-        self.train(tr)
-        return tokens
 
     @torch.no_grad()
     def calc_kl_weights(self, all_kl: torch.Tensor) -> torch.Tensor:
@@ -122,11 +87,10 @@ class RNAVAE(L.LightningModule):
                     nn.init.zeros_(mod.bias)
             elif isinstance(mod, nn.Embedding):
                 nn.init.normal_(mod.weight, std=self.config.d_model**-0.5)
-                mod._fill_padding_idx_with_zero()
-
-    @property
-    def pad_idx(self):
-        return self.config.vocab["[PAD]"]
+            elif isinstance(mod, (nn.Conv1d, nn.ConvTranspose1d)):
+                nn.init.xavier_uniform_(mod.weight)
+                if mod.bias is not None:
+                    nn.init.zeros_(mod.bias)
 
     @property
     def start_idx(self):
@@ -135,50 +99,122 @@ class RNAVAE(L.LightningModule):
     @property
     def stop_idx(self):
         return self.config.vocab["[STOP]"]
-    
+
     @property
     def unk_idx(self):
         return self.config.vocab["[UNK]"]
+
+
+class DownConv1DBlock(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv1d(dim, dim, kernel_size=5, padding=2, stride=2),  # 2x downsampling
+            nn.SiLU(),
+            nn.Conv1d(dim, dim, kernel_size=1),
+            nn.SiLU(),
+            nn.Conv1d(dim, dim, kernel_size=1),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = x.transpose(1, 2)
+        x = self.block(x)
+        return x.transpose(1, 2)
+
+
+class UpConv1DBlock(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.ConvTranspose1d(
+                dim, dim, kernel_size=5, padding=2, stride=2, output_padding=1
+            ),
+            nn.SiLU(),
+            nn.Conv1d(dim, dim, kernel_size=1),
+            nn.SiLU(),
+            nn.Conv1d(dim, dim, kernel_size=1),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = x.transpose(1, 2)
+        x = self.block(x)
+        return x.transpose(1, 2)
 
 
 class Encoder(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
-        self.embed = nn.Embedding(
-            len(config.vocab), config.d_model, padding_idx=config.vocab["[PAD]"]
+        self.embed = nn.Embedding(len(config.vocab), config.d_model)
+
+        # 400
+        self.block1 = hnn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv1 = DownConv1DBlock(config.d_model)
+
+        # 200
+        self.block2 = hnn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv2 = DownConv1DBlock(config.d_model)
+
+        # 100
+        self.block3 = hnn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv3 = DownConv1DBlock(config.d_model)
+
+        # 50
+        self.block4 = hnn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv4 = DownConv1DBlock(config.d_model)
+
+        self.conv_last = nn.Sequential(
+            nn.Conv1d(config.d_model, config.d_model, kernel_size=5, padding=2),
+            nn.SiLU(),
+            nn.Conv1d(config.d_model, config.d_model, kernel_size=1),
         )
 
-        self.blocks = hnn.TransformerEncoder(
-            hnn.TransformerEncoderLayer(
-                d_model=config.d_model,
-                nhead=config.n_head,
-                dim_feedforward=config.dim_ff,
-                dropout=0.1,
-            )
-            for _ in range(config.n_layers)
+        self.enc_neck = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.Tanh(),
+            nn.Linear(config.d_model, 2 * config.zdim),
         )
-
-        self.enc_neck = nn.Linear(config.d_model, 2 * config.zdim)
-
-        acc = torch.zeros(config.n_bn, config.d_model)
-        acc = nn.init.orthogonal_(acc).unsqueeze(0)
-        self.register_parameter("acc", nn.Parameter(acc))
 
     def forward(self, tokens: Tensor):
-        emb = torch.cat(
-            (
-                self.acc.expand(tokens.size(0), -1, -1),
-                self.embed(tokens),
-            ),
-            dim=1,
-        )
+        emb = self.embed(tokens)
 
-        pad_mask = tokens == self.config.vocab["[PAD]"]
-        pad_mask = F.pad(pad_mask, (self.config.n_bn, 0), value=False)
+        emb = self.block1(emb)
+        emb = self.conv1(emb)
 
-        hidden = self.blocks(emb, src_pad_mask=pad_mask)[:, : self.config.n_bn]
-        loc, log_scale = self.enc_neck(hidden).chunk(2, dim=-1)
+        emb = self.block2(emb)
+        emb = self.conv2(emb)
+
+        emb = self.block3(emb)
+        emb = self.conv3(emb)
+
+        emb = self.block4(emb)
+        emb = self.conv4(emb)
+
+        # Interpolate to 16
+        emb = F.interpolate(emb.transpose(1, 2), size=16, mode="linear")
+        emb = self.conv_last(emb).transpose(1, 2)
+
+        loc, log_scale = self.enc_neck(emb).chunk(2, dim=-1)
 
         posterior = Normal(loc, exp_lin(log_scale))
         return posterior
@@ -189,30 +225,74 @@ class Decoder(nn.Module):
         super().__init__()
         self.config = config
 
-        self.embed = nn.Embedding(
-            len(config.vocab), config.d_model, padding_idx=config.vocab["[PAD]"]
+        self.base = nn.Parameter(torch.randn(1, 25, config.d_model))
+        self.z_proj = nn.Linear(config.zdim, config.d_model)
+
+        # 25
+        self.block1 = hnn.TransformerDecoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv1 = UpConv1DBlock(config.d_model)
+
+        # 50
+        self.block2 = hnn.TransformerDecoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv2 = UpConv1DBlock(config.d_model)
+
+        # 100
+        self.block3 = hnn.TransformerDecoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv3 = UpConv1DBlock(config.d_model)
+
+        # 200
+        self.block4 = hnn.TransformerDecoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_head,
+            dim_feedforward=config.dim_ff,
+            dropout=0.0,
+        )
+        self.conv4 = UpConv1DBlock(config.d_model)
+
+        self.conv_last = nn.Sequential(
+            nn.Conv1d(config.d_model, config.d_model, kernel_size=5, padding=2),
+            nn.SiLU(),
+            nn.Conv1d(config.d_model, config.d_model, kernel_size=1),
         )
 
-        self.blocks = hnn.TransformerDecoder(
-            hnn.TransformerDecoderLayer(
-                d_model=config.d_model,
-                nhead=config.n_head,
-                dim_feedforward=config.dim_ff,
-                dropout=0.1,
-            )
-            for _ in range(config.n_layers)
+        self.logit_proj = nn.Sequential(
+            nn.LayerNorm(config.d_model),
+            nn.Linear(config.d_model, len(config.vocab)),
         )
 
-        self.dec_neck = nn.Linear(config.zdim, config.d_model)
+    def forward(self, z: Tensor) -> Tensor:
+        z = self.z_proj(z)
 
-        self.logit_proj = nn.Linear(config.d_model, len(config.vocab))
+        hidden = self.base.expand(z.size(0), -1, -1)
 
-    def forward(self, tokens: Tensor, z: Tensor) -> Tensor:
-        z = self.dec_neck(z)
+        hidden = self.block1(hidden, z)
+        hidden = self.conv1(hidden)
 
-        emb = self.embed(tokens)
+        hidden = self.block2(hidden, z)
+        hidden = self.conv2(hidden)
 
-        hidden = self.blocks(emb, mem=z, tgt_is_causal=True)
+        hidden = self.block3(hidden, z)
+        hidden = self.conv3(hidden)
+
+        hidden = self.block4(hidden, z)
+        hidden = self.conv4(hidden)
+
+        hidden = self.conv_last(hidden.transpose(1, 2)).transpose(1, 2)
 
         return self.logit_proj(hidden)
 
@@ -233,18 +313,14 @@ def compute_stats(
     tokens: Tensor,
     logits: Tensor,
     post: Normal,
-    pad_idx: int,
 ) -> Tuple[Tensor, Dict]:
-    ltok = tokens[:, 1:]
-    llog = logits[:, :-1]
-
-    nll = cross_entropy(llog, ltok, pad_idx).mean()
+    nll = cross_entropy(logits, tokens).mean()
     kl = HNNF.gaussian_kl_standard_normal(post.loc, post.scale).mean(dim=0)
 
-    preds = llog.argmax(dim=-1)
-    hits = preds == ltok
-    tok_acc = hits[ltok != pad_idx].float().mean()
-    string_acc = (hits | (ltok == pad_idx)).all(dim=-1).float().mean()
+    preds = logits.argmax(dim=-1)
+    hits = preds == tokens
+    tok_acc = hits.float().mean()
+    string_acc = (hits).all(dim=-1).float().mean()
 
     kl_min = kl.min()
     kl_max = kl.max()
@@ -302,12 +378,9 @@ def batch_nvae_kl_weights(
 def cross_entropy(
     logits: Tensor,
     targets: Tensor,
-    pad_idx: int,
 ):
-    nll = F.cross_entropy(
-        logits.permute(0, 2, 1), targets, ignore_index=pad_idx, reduction="none"
-    )
-    nll = nll.sum(dim=-1) / (targets != pad_idx).sum(dim=-1)
+    nll = F.cross_entropy(logits.permute(0, 2, 1), targets, reduction="none")
+    nll = nll.mean(dim=-1)
     return nll
 
 

@@ -27,6 +27,18 @@ class DiffusionDataModule(L.LightningDataModule):
 
 class LatentDataset(Dataset):
     def __init__(self, data_dir: str) -> None:
+        self.m, self.s = torch.load(f"{data_dir}/low_all.pt")
+
+    def __len__(self) -> int:
+        return len(self.m)
+
+    def __getitem__(self, idx: int):
+        z = self.m[idx] + self.s[idx] * torch.randn_like(self.m[idx])
+        return z
+
+
+class LatentDatasetCond(Dataset):
+    def __init__(self, data_dir: str) -> None:
         lm, ls = torch.load(f"{data_dir}/low.pt")
         hm, hs = torch.load(f"{data_dir}/high.pt")
 

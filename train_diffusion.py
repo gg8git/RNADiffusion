@@ -1,11 +1,11 @@
 import lightning as L
 import torch
-from model.UNet1D import KarrasUnet1D
-from model.GaussianDiffusion import GaussianDiffusion1D
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar
 from lightning.pytorch.loggers import WandbLogger
 
 from data.diffusion_datamodule import DiffusionDataModule
+from model.GaussianDiffusion import GaussianDiffusion1D
+from model.UNet1D import KarrasUnet1D
 
 torch.set_float32_matmul_precision("medium")
 
@@ -18,12 +18,9 @@ class Wrapper(L.LightningModule):
             dim=64,
             dim_max=128,
             channels=16,
-            num_blocks_per_stage=5,
             num_downsamples=3,
             attn_res=(32, 16, 8),
             attn_dim_head=32,
-            num_classes=2,
-            self_condition=True,
         )
 
         self.diffusion = GaussianDiffusion1D(
@@ -33,12 +30,11 @@ class Wrapper(L.LightningModule):
             objective="pred_noise",
         )
 
-    def forward(self, x, labels):
-        return self.diffusion(x, labels)
+    def forward(self, z):
+        return self.diffusion(z)
 
     def training_step(self, batch, batch_idx):
-        z, labels = batch
-        loss = self.forward(z, labels)
+        loss = self.forward(batch)
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
@@ -55,9 +51,7 @@ def main():
         num_workers=0,
     )
 
-    logger = WandbLogger(
-        project="RNA_Diffusion", offline=False, name="ClassConditioned_LowHigh"
-    )
+    logger = WandbLogger(project="RNA_Diffusion", offline=False, name="LowMany")
 
     check = ModelCheckpoint(every_n_train_steps=1024, save_top_k=-1, save_last=True)
 

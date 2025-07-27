@@ -68,18 +68,22 @@ class GaussianDiffusion1D(nn.Module):
         objective="pred_noise",
         beta_schedule="cosine",
         ddim_sampling_eta=0.0,
+        loss_type="mse",
     ):
         super().__init__()
         self.model = model
+        assert hasattr(self.model, "channels"), "Model must have 'channels' attribute"
         self.channels = self.model.channels
-        self.self_condition = self.model.self_condition
+        self.self_condition = getattr(model, "self_condition", False)
 
         self.seq_length = seq_length
+
+        self.loss_type = loss_type
 
         self.objective = objective
 
         assert (
-            objective in {"pred_noise", "pred_x0", "pred_v"}
+            self.objective in {"pred_noise", "pred_x0", "pred_v"}
         ), "objective must be either pred_noise (predict noise) or pred_x0 (predict image start) or pred_v (predict v [v-parameterization as defined in appendix D of progressive distillation paper, used in imagen-video successfully])"
 
         if beta_schedule == "linear":
@@ -89,8 +93,9 @@ class GaussianDiffusion1D(nn.Module):
         else:
             raise ValueError(f"unknown beta schedule {beta_schedule}")
 
+        betas = betas.clamp(1e-6, 1-1e-6)
         alphas = 1.0 - betas
-        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        alphas_cumprod = torch.cumprod(alphas, dim=0).clamp(min=1e-6)
         alphas_cumprod_prev = F.pad(alphas_cumprod[:-1], (1, 0), value=1.0)
 
         (timesteps,) = betas.shape
@@ -266,8 +271,17 @@ class GaussianDiffusion1D(nn.Module):
         pred_img = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred_img, x_start
 
+    def condition_score(self, cond_fn, x, t, x_start, alpha):
+        pred_noise = self.predict_noise_from_start(x, t, x_start)
+        pred_noise = pred_noise - (1 - alpha).sqrt() * cond_fn(x, t)
+
+        x_start = self.predict_start_from_noise(x, t, pred_noise)
+        pred_noise = self.predict_noise_from_start(x, t, x_start)
+
+        return pred_noise, x_start
+
     @torch.no_grad()
-    def ddim_sample(self, shape, clip_denoised=True, class_labels=None):
+    def ddim_sample(self, shape, cond_fn=None, clip_denoised=True, class_labels=None):
         assert (
             class_labels is not None or not self.model.needs_class_labels
         ), "class_labels must be provided for ddim_sample"
@@ -311,6 +325,85 @@ class GaussianDiffusion1D(nn.Module):
 
             alpha = self.alphas_cumprod[time]
             alpha_next = self.alphas_cumprod[time_next]
+
+            # guidance
+            if cond_fn is not None:
+                pred_noise, x_start = self.condition_score(
+                    cond_fn,
+                    img,
+                    time_cond,
+                    x_start,
+                    alpha,
+                )
+
+            sigma = (
+                eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+            )
+            c = (1 - alpha_next - sigma**2).sqrt()
+
+            noise = torch.randn_like(img)
+
+            img = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+
+        return img
+    
+    def condition(self, cond_fn, x, t, pred_noise, alpha, guidance_scale=1.0):
+        return pred_noise - guidance_scale * (1 - alpha).sqrt() * cond_fn(x, t)
+
+    @torch.no_grad()
+    def ddim_sample_orig(self, shape, cond_fn=None, clip_denoised=True, class_labels=None):
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for ddim_sample"
+
+        batch, device, total_timesteps, sampling_timesteps, eta = (
+            shape[0],
+            self.betas.device,
+            self.num_timesteps,
+            self.sampling_timesteps,
+            self.ddim_sampling_eta,
+        )
+
+        times = torch.linspace(
+            -1, total_timesteps - 1, steps=sampling_timesteps + 1
+        )  # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
+        times = list(reversed(times.int().tolist()))
+        time_pairs = list(
+            zip(times[:-1], times[1:])
+        )  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+
+        img = torch.randn(shape, device=device)
+
+        x_start = None
+
+        for time, time_next in tqdm(
+            time_pairs, desc="sampling loop time step", leave=False
+        ):
+            time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
+            self_cond = x_start if self.self_condition else None
+            pred_noise, x_start, *_ = self.model_predictions(
+                img,
+                time_cond,
+                class_labels=class_labels,
+                x_self_cond=self_cond,
+                clip_x_start=clip_denoised,
+            )
+
+            if time_next < 0:
+                img = x_start
+                continue
+
+            alpha = self.alphas_cumprod[time]
+            alpha_next = self.alphas_cumprod[time_next]
+
+            if cond_fn is not None:
+                pred_noise = self.condition(
+                    cond_fn, 
+                    img, 
+                    time_cond, 
+                    pred_noise, 
+                    alpha
+                )
 
             sigma = (
                 eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
@@ -379,7 +472,15 @@ class GaussianDiffusion1D(nn.Module):
         else:
             raise ValueError(f"unknown objective {self.objective}")
 
-        loss = F.mse_loss(model_out, target, reduction="none")
+        if self.loss_type == "mse":
+            loss = F.mse_loss(model_out, target, reduction="none")
+        elif self.loss_type == "l1":
+            loss = F.l1_loss(model_out, target, reduction="none")
+        elif self.loss_type == "huber":
+            loss = F.smooth_l1_loss(model_out, target, reduction="none")
+        else:
+            raise ValueError(f"Unsupported loss type: {self.loss_type}")
+        
         loss = reduce(loss, "b ... -> b", "mean")
 
         loss = loss * extract(self.loss_weight, t, loss.shape)

@@ -259,29 +259,98 @@ class GaussianDiffusion1D(nn.Module):
             x_start=x_start, x_t=x, t=t
         )
         return model_mean, posterior_variance, posterior_log_variance, x_start
+    
+    def condition_mean(self, cond_fn, mean, variance, t):
+        """
+            Compute the mean for the previous step, given a function cond_fn that
+            computes the gradient of a conditional log probability with respect to
+            x. In particular, cond_fn computes grad(log(p(y|x))), and we want to
+            condition on y.
+            This uses the conditioning strategy from Sohl-Dickstein et al. (2015).
+
+            # this fixes a bug in the official OpenAI implementation:
+            # https://github.com/openai/guided-diffusion/issues/51 (see point 1)
+            # use the predicted mean for the previous timestep to compute gradient
+        """
+
+        gradient = cond_fn(mean, t)
+        new_mean = (mean.float() + variance * gradient.float())
+
+        return new_mean
 
     @torch.no_grad()
-    def p_sample(self, x, t: int, x_self_cond=None, clip_denoised=True):
+    def p_sample(self, x, t: int, x_self_cond=None, clip_denoised=True, cond_fn=None):
         b, *_, _device = *x.shape, x.device
         batched_times = torch.full((b,), t, device=x.device, dtype=torch.long)
-        model_mean, _, model_log_variance, x_start = self.p_mean_variance(
+        model_mean, variance, model_log_variance, x_start = self.p_mean_variance(
             x=x, t=batched_times, x_self_cond=x_self_cond, clip_denoised=clip_denoised
         )
+
+        if exists(cond_fn):
+            model_mean = self.condition_mean(cond_fn=cond_fn, mean=model_mean, variance=variance, t=batched_times)
+        
+        if clip_denoised:
+            model_mean.clamp_(min=LMIN, max=LMAX)
+
         noise = torch.randn_like(x) if t > 0 else 0.0  # no noise if t == 0
         pred_img = model_mean + (0.5 * model_log_variance).exp() * noise
         return pred_img, x_start
 
-    def condition_score(self, cond_fn, x, t, x_start, alpha):
-        pred_noise = self.predict_noise_from_start(x, t, x_start)
-        pred_noise = pred_noise - (1 - alpha).sqrt() * cond_fn(x, t)
+    @torch.no_grad()
+    def ddpm_sample(self, batch_size, clip_denoised=True, class_labels: torch.Tensor = None, cond_fn=None):
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for sampling"
+
+        seq_length, channels = self.seq_length, self.channels
+        shape, device = (batch_size, channels, seq_length), self.betas.device
+
+        x = torch.randn(shape, device=device)
+        for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'DDPM Sampling loop time step', total=self.num_timesteps, leave=False):
+            x, x_start = self.p_sample(x, t, clip_denoised=clip_denoised, cond_fn=cond_fn)
+
+        return x
+    
+    def condition_score_model_predictions(
+        self,
+        cond_fn,
+        x,
+        t,
+        alpha,
+        class_labels,
+        x_self_cond=None,
+        clip_x_start=False,
+        grad_scale=1.0,
+    ):
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for model_predictions"
+        assert (self.objective == "pred_noise"), "model must predict noise for score conditioning"
+
+        x = x.clone().detach().requires_grad_(True)
+        pred_noise = self.model(x, t, x_self_cond, class_labels=class_labels)
+
+        maybe_clip = (
+            partial(torch.clamp, min=LMIN, max=LMAX) if clip_x_start else identity
+        )
 
         x_start = self.predict_start_from_noise(x, t, pred_noise)
-        pred_noise = self.predict_noise_from_start(x, t, x_start)
+        cond_loss = cond_fn(x_start, t)
+        cond_grad = torch.autograd.grad(
+            cond_loss,
+            x,
+            create_graph=True,
+            retain_graph=True
+        )[0]
+        
+        pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_grad
+        x_start = self.predict_start_from_noise(x, t, pred_noise)
+        x_start = maybe_clip(x_start)
 
-        return pred_noise, x_start
+        return ModelPrediction(pred_noise, x_start)
 
     @torch.no_grad()
-    def ddim_sample(self, shape, cond_fn=None, clip_denoised=True, class_labels=None):
+    def ddim_sample(self, shape, eta=None, sampling_timesteps=None, grad_scale=1.0, cond_fn=None, clip_denoised=True, class_labels=None):
         assert (
             class_labels is not None or not self.model.needs_class_labels
         ), "class_labels must be provided for ddim_sample"
@@ -290,8 +359,12 @@ class GaussianDiffusion1D(nn.Module):
             shape[0],
             self.betas.device,
             self.num_timesteps,
-            self.sampling_timesteps,
-            self.ddim_sampling_eta,
+            sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
+            eta if exists(eta) else self.ddim_sampling_eta,
+        )
+
+        maybe_clip = (
+            partial(torch.clamp, min=LMIN, max=LMAX) if clip_denoised else identity
         )
 
         times = torch.linspace(
@@ -307,7 +380,91 @@ class GaussianDiffusion1D(nn.Module):
         x_start = None
 
         for time, time_next in tqdm(
-            time_pairs, desc="sampling loop time step", leave=False
+            time_pairs, desc='DDIM Sampling loop time step', leave=False
+        ):
+            time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
+            self_cond = x_start if self.self_condition else None
+
+            alpha = self.alphas_cumprod[time]
+            alpha_next = self.alphas_cumprod[time_next]
+
+            if exists(cond_fn) and self.objective == "pred_noise":
+                with torch.enable_grad():
+                    pred_noise, x_start, *_ = self.condition_score_model_predictions(
+                        cond_fn, img, time_cond, alpha,
+                        class_labels=class_labels,
+                        x_self_cond=self_cond,
+                        clip_x_start=clip_denoised,
+                        grad_scale=grad_scale,
+                    )
+            else:
+                pred_noise, x_start, *_ = self.model_predictions(
+                    img, time_cond,
+                    class_labels=class_labels,
+                    x_self_cond=self_cond,
+                    clip_x_start=clip_denoised,
+                )
+
+            if time_next < 0:
+                img = maybe_clip(x_start)
+                continue
+
+            sigma = (
+                eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+            )
+            c = (1 - alpha_next - sigma**2).sqrt()
+
+            noise = torch.randn_like(img)
+            img = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+            img = maybe_clip(img)
+
+        return img
+
+    def condition_score(self, cond_fn, x, t, pred_noise, x_start, alpha, grad_scale=1.0):
+        # either this or nudging x_start (read blog to learn)
+
+        # if nudging x_start, take in x_start, then: x_start = x_start + smt, pred_noise = predict_noise_from_start()
+        # pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_fn(x, t) / alpha.sqrt()
+        # pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_fn(x_start, t)
+        pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * (cond_fn(x_start, t) - alpha.sqrt() * cond_fn(x, t)) / (1 - alpha).sqrt()
+        x_start = self.predict_start_from_noise(x, t, pred_noise)
+        return pred_noise, x_start
+
+    @torch.no_grad()
+    def ddim_sample_orig(self, shape, eta=None, sampling_timesteps=None, grad_scale=1.0, cond_fn=None, clip_denoised=True, class_labels=None):
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for ddim_sample"
+
+        batch, device, total_timesteps, sampling_timesteps, eta = (
+            shape[0],
+            self.betas.device,
+            self.num_timesteps,
+            sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
+            eta if exists(eta) else self.ddim_sampling_eta,
+        )
+
+        maybe_clip = (
+            partial(torch.clamp, min=LMIN, max=LMAX) if clip_denoised else identity
+        )
+
+        times = torch.linspace(
+            -1, total_timesteps - 1, steps=sampling_timesteps + 1
+        )  # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
+        times = list(reversed(times.int().tolist()))
+        time_pairs = list(
+            zip(times[:-1], times[1:])
+        )  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+
+        img = torch.randn(shape, device=device)
+
+        for i, latent in enumerate(img):
+            print(f"Sample {i+1} | Mean Value: {latent.mean():.3f}, STD Deviation: {latent.std():.5f}")
+
+        x_start = None
+
+        for time, time_next in tqdm(
+            time_pairs, desc='DDIM Sampling loop time step', leave=False
         ):
             time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
             self_cond = x_start if self.self_condition else None
@@ -318,23 +475,17 @@ class GaussianDiffusion1D(nn.Module):
                 x_self_cond=self_cond,
                 clip_x_start=clip_denoised,
             )
-
-            if time_next < 0:
-                img = x_start
-                continue
 
             alpha = self.alphas_cumprod[time]
             alpha_next = self.alphas_cumprod[time_next]
 
             # guidance
             if cond_fn is not None:
-                pred_noise, x_start = self.condition_score(
-                    cond_fn,
-                    img,
-                    time_cond,
-                    x_start,
-                    alpha,
-                )
+                pred_noise, x_start = self.condition_score(cond_fn, img, time_cond, pred_noise, x_start, alpha, grad_scale)
+
+            if time_next < 0:
+                img = maybe_clip(x_start)
+                continue
 
             sigma = (
                 eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
@@ -342,80 +493,11 @@ class GaussianDiffusion1D(nn.Module):
             c = (1 - alpha_next - sigma**2).sqrt()
 
             noise = torch.randn_like(img)
-
             img = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+            img = maybe_clip(img)
 
         return img
     
-    def condition(self, cond_fn, x, t, pred_noise, alpha, guidance_scale=1.0):
-        return pred_noise - guidance_scale * (1 - alpha).sqrt() * cond_fn(x, t)
-
-    @torch.no_grad()
-    def ddim_sample_orig(self, shape, cond_fn=None, clip_denoised=True, class_labels=None):
-        assert (
-            class_labels is not None or not self.model.needs_class_labels
-        ), "class_labels must be provided for ddim_sample"
-
-        batch, device, total_timesteps, sampling_timesteps, eta = (
-            shape[0],
-            self.betas.device,
-            self.num_timesteps,
-            self.sampling_timesteps,
-            self.ddim_sampling_eta,
-        )
-
-        times = torch.linspace(
-            -1, total_timesteps - 1, steps=sampling_timesteps + 1
-        )  # [-1, 0, 1, 2, ..., T-1] when sampling_timesteps == total_timesteps
-        times = list(reversed(times.int().tolist()))
-        time_pairs = list(
-            zip(times[:-1], times[1:])
-        )  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
-
-        img = torch.randn(shape, device=device)
-
-        x_start = None
-
-        for time, time_next in tqdm(
-            time_pairs, desc="sampling loop time step", leave=False
-        ):
-            time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
-            self_cond = x_start if self.self_condition else None
-            pred_noise, x_start, *_ = self.model_predictions(
-                img,
-                time_cond,
-                class_labels=class_labels,
-                x_self_cond=self_cond,
-                clip_x_start=clip_denoised,
-            )
-
-            if time_next < 0:
-                img = x_start
-                continue
-
-            alpha = self.alphas_cumprod[time]
-            alpha_next = self.alphas_cumprod[time_next]
-
-            if cond_fn is not None:
-                pred_noise = self.condition(
-                    cond_fn, 
-                    img, 
-                    time_cond, 
-                    pred_noise, 
-                    alpha
-                )
-
-            sigma = (
-                eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
-            )
-            c = (1 - alpha_next - sigma**2).sqrt()
-
-            noise = torch.randn_like(img)
-
-            img = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
-
-        return img
-
     @torch.no_grad()
     def sample(self, batch_size, class_labels: torch.Tensor = None):
         assert (

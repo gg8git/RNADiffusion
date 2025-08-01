@@ -14,20 +14,42 @@ class DiffusionDataModule(L.LightningDataModule):
         self.num_workers = num_workers
 
     def train_dataloader(self) -> DataLoader:
-        train_data = LatentDataset(self.data_dir)
+        train_data = LatentDataset(self.data_dir, "train")
         return DataLoader(
             train_data,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
-            pin_memory=True,
+            # pin_memory=True,
+            drop_last=True,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        val_data = LatentDataset(self.data_dir, "val")
+        return DataLoader(
+            val_data,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            # pin_memory=True,
+            drop_last=True,
+        )
+    
+    def test_dataloader(self) -> DataLoader:
+        test_data = LatentDataset(self.data_dir, "test")
+        return DataLoader(
+            test_data,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            # pin_memory=True,
             drop_last=True,
         )
 
 
 class LatentDataset(Dataset):
-    def __init__(self, data_dir: str) -> None:
-        self.m, self.s = torch.load(f"{data_dir}/low_all.pt")
+    def __init__(self, data_dir: str, split: str) -> None:
+        self.m, self.s = torch.load(f"{data_dir}/low_all_{split}.pt")
 
     def __len__(self) -> int:
         return len(self.m)

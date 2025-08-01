@@ -1,6 +1,6 @@
 import lightning as L
 import torch
-from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar
+from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMProgressBar
 from lightning.pytorch.loggers import WandbLogger
 
 from data.diffusion_datamodule import DiffusionDataModule
@@ -14,7 +14,7 @@ class Wrapper(L.LightningModule):
     def __init__(self):
         super().__init__()
         model = KarrasUnet1D(
-            seq_len=64,
+            seq_len=8,
             dim=64,
             dim_max=128,
             channels=16,
@@ -25,7 +25,7 @@ class Wrapper(L.LightningModule):
 
         self.diffusion = GaussianDiffusion1D(
             model,
-            seq_length=64,
+            seq_length=8,
             timesteps=1000,
             objective="pred_noise",
         )
@@ -34,6 +34,7 @@ class Wrapper(L.LightningModule):
         return self.diffusion(z)
 
     def training_step(self, batch, batch_idx):
+        batch = batch.transpose(1,2)
         loss = self.forward(batch)
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
@@ -46,12 +47,15 @@ def main():
     model = Wrapper()
 
     dm = DiffusionDataModule(
-        data_dir="data",
+        data_dir="data/selfies",
         batch_size=64,
         num_workers=0,
     )
 
-    logger = WandbLogger(project="RNA_Diffusion", offline=False, name="LowMany")
+    # batch = next(iter(dm.train_dataloader()))
+    # import ipdb; ipdb.set_trace()
+
+    logger = WandbLogger(project="SELFIES_Diffusion", offline=False, name="LowMany")
 
     check = ModelCheckpoint(every_n_train_steps=1024, save_top_k=-1, save_last=True)
 
@@ -62,7 +66,7 @@ def main():
         max_epochs=20_000,
         inference_mode=True,
         precision="bf16-mixed",
-        callbacks=[RichProgressBar(), check],
+        callbacks=[TQDMProgressBar(), check],
         gradient_clip_val=5.0,
         num_sanity_val_steps=0,
         check_val_every_n_epoch=100,

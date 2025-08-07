@@ -57,12 +57,13 @@ def generate_batch(
     n_candidates=None,  # Number of candidates for Thompson sampling
     num_restarts=10,
     raw_samples=256,
-    acqf="ts",  # "ei" or "ts"
-    diffusion=None,
+    acqf="ts",  # "ei" or "ts" or "ddim"
+    # diffusion=None,
     dtype=torch.float32,
     device=torch.device("cuda"),
 ):
-    assert acqf in ("ts", "ei", "ddim")
+    assert acqf in ("ts", "ei")
+    # assert acqf in ("ts", "ei", "ddim")
     assert torch.all(torch.isfinite(Y))
     if n_candidates is None:
         n_candidates = min(5000, max(2000, 200 * X.shape[-1]))
@@ -110,16 +111,15 @@ def generate_batch(
         thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)
         X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size)
     
-    if acqf == "ddim":
-        assert (diffusion is not None)
+    # if acqf == "ddim":
+    #     assert (diffusion is not None)
 
-        ei = qExpectedImprovement(model.cuda(), Y.max().cuda())
-        def neg_qei(z, t):
-            return -1 * ei(z.transpose(1,2).reshape(z.shape[0], -1))
+    #     ei = qExpectedImprovement(model.cuda(), Y.max().cuda())
+    #     def neg_qei(z, t):
+    #         return -1 * ei(z.transpose(1,2).reshape(z.shape[0], -1))
 
-        shape = (batch_size, diffusion.channels, diffusion.seq_length)
-        latents = diffusion.ddim_sample(shape, class_labels=None, cond_fn=neg_qei, bounds=torch.stack([tr_lb, tr_ub]).cuda(), grad_scale=10.0, eta=0.1)
-        X_next = latents.transpose(1,2).reshape(batch_size, -1)
+    #     shape = (batch_size, diffusion.channels, diffusion.seq_length)
+    #     latents = diffusion.ddim_sample(shape, class_labels=None, cond_fn=neg_qei, bounds=torch.stack([tr_lb, tr_ub]).cuda(), grad_scale=10.0, eta=0.1)
+    #     X_next = latents.transpose(1,2).reshape(batch_size, -1)
 
     return X_next
-

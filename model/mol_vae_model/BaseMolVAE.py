@@ -143,20 +143,16 @@ class BaseVAE(pl.LightningModule):
             recon_loss=recon_loss,
             kldiv=kldiv,
             token_acc=token_acc,
-            recon_token_acc=(logits.argmax(dim=-1) == tokens).float().mean(),
             string_acc=string_acc,
-            recon_string_acc=(logits.argmax(dim=-1) == tokens).all(dim=1).float().mean(dim=0),
             sigma_mean=sigma_mean,
             mu_ign=mu,
             sigma_ign=sigma,
             kl_factor=kl_fac
         )
-    
+
     @torch.inference_mode()
     def sample(self, z: torch.Tensor, argmax=True, max_len=256):
         self.eval()
-
-        z = z.cuda()
 
         tokens = torch.full((z.shape[0], 1), fill_value=self.start_tok, dtype=torch.long).cuda()
         while True: # Loop until every molecule hits a stop token

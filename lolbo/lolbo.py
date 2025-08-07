@@ -6,9 +6,9 @@ from lolbo.turbo import TurboState, update_state, generate_batch
 from lolbo.utils import update_models_end_to_end, update_surr_model
 from model.surrogate_model.ppgpr import GPModelDKL
 
-import lightning as L
-from model.GaussianDiffusion import GaussianDiffusion1D
-from model.UNet1D import KarrasUnet1D
+# import lightning as L
+# from model.GaussianDiffusion import GaussianDiffusion1D
+# from model.UNet1D import KarrasUnet1D
 
 
 class LOLBOState:
@@ -59,7 +59,7 @@ class LOLBOState:
         self.initialize_surrogate_model()
         self.initialize_tr_state()
         self.initialize_xs_to_scores_dict()
-        self.initialize_diffusion_model()
+        # self.initialize_diffusion_model()
 
     def initialize_xs_to_scores_dict(
         self,
@@ -96,47 +96,47 @@ class LOLBOState:
         self.model = self.model.cuda()
 
         return self
-    
-    def initialize_diffusion_model(self):
-        class Wrapper(L.LightningModule):
-            def __init__(self):
-                super().__init__()
-                model = KarrasUnet1D(
-                    seq_len=8,
-                    dim=64,
-                    dim_max=128,
-                    channels=16,
-                    num_downsamples=3,
-                    attn_res=(32, 16, 8),
-                    attn_dim_head=32,
-                )
 
-                self.diffusion = GaussianDiffusion1D(
-                    model,
-                    seq_length=8,
-                    timesteps=1000,
-                    objective="pred_noise",
-                )
+    # def initialize_diffusion_model(self):
+    #     class Wrapper(L.LightningModule):
+    #         def __init__(self):
+    #             super().__init__()
+    #             model = KarrasUnet1D(
+    #                 seq_len=8,
+    #                 dim=64,
+    #                 dim_max=128,
+    #                 channels=16,
+    #                 num_downsamples=3,
+    #                 attn_res=(32, 16, 8),
+    #                 attn_dim_head=32,
+    #             )
 
-            def forward(self, z):
-                z = z.transpose(1,2)
-                return self.diffusion(z)
+    #             self.diffusion = GaussianDiffusion1D(
+    #                 model,
+    #                 seq_length=8,
+    #                 timesteps=1000,
+    #                 objective="pred_noise",
+    #             )
 
-            def training_step(self, batch, batch_idx):
-                loss = self.forward(batch)
-                self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-                return loss
+    #         def forward(self, z):
+    #             z = z.transpose(1,2)
+    #             return self.diffusion(z)
 
-            def configure_optimizers(self):
-                return torch.optim.Adam(self.diffusion.parameters(), lr=3e-4)
+    #         def training_step(self, batch, batch_idx):
+    #             loss = self.forward(batch)
+    #             self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+    #             return loss
+
+    #         def configure_optimizers(self):
+    #             return torch.optim.Adam(self.diffusion.parameters(), lr=3e-4)
         
-        model = Wrapper()
+    #     model = Wrapper()
         
-        ckpt = torch.load("SELFIES_Diffusion/jhqe3fgr/checkpoints/last.ckpt", map_location="cpu")
-        model.load_state_dict(ckpt["state_dict"])
-        self.diffusion = model.diffusion
+    #     ckpt = torch.load("SELFIES_Diffusion/jhqe3fgr/checkpoints/last.ckpt", map_location="cpu")
+    #     model.load_state_dict(ckpt["state_dict"])
+    #     self.diffusion = model.diffusion
 
-        return self
+    #     return self
 
     def update_next(self, z_next_, y_next_, x_next_, acquisition=False):
         """Add new points (z_next, y_next, x_next) to train data
@@ -193,6 +193,7 @@ class LOLBOState:
             train_z = self.train_z[-self.bsz :]
             train_y = self.train_y[-self.bsz :].squeeze(-1)
 
+        # import ipdb; ipdb.set_trace()
         self.model = update_surr_model(self.model, self.mll, self.learning_rte, train_z, train_y, n_epochs)
         self.initial_model_training_complete = True
 
@@ -205,6 +206,7 @@ class LOLBOState:
         new_ys = self.train_y[-self.bsz :].squeeze(-1).tolist()
         train_x = new_xs + self.top_k_xs
         train_y = torch.tensor(new_ys + self.top_k_scores).float()
+        # import ipdb; ipdb.set_trace()
         self.objective, self.model = update_models_end_to_end(
             train_x, train_y, self.objective, self.model, self.mll, self.learning_rte, self.num_update_epochs
         )
@@ -269,7 +271,7 @@ class LOLBOState:
             Y=self.train_y,
             batch_size=self.bsz,
             acqf=self.acq_func,
-            diffusion=self.diffusion,
+            # diffusion=self.diffusion,
         )
         # 2. Evaluate the batch of candidates by calling oracle
         with torch.no_grad():

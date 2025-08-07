@@ -1,0 +1,44 @@
+changes i made structurally
+1. took out num_tr_resets + related code from diff_bo.py
+2. merged optimize and molecule optimization into diff_bo.py
+3. merged molecule objective and latent space objective into objective.py
+4. merged load_data and mol_utils into guacamol_utils.py
+5. changed SELFIESDataset
+6. changed BaseVAE slightly
+
+
+changes i made to objective.py
+- path_to_vae_statedict modified
+- self.dim = 256 -> self.dim = 128
+- vae_decode
+    - changed z reshape before entering vae.sample()
+- initialize_vae
+    - replace original SELFIESDataset() with my SELFIESDataset()
+    - replace InfoTransformerVAE() with BaseMolVAE(), passing in vocab2idx instead of dataobj
+    - replace load_state_dict() with custom_load_state_dict()
+- vae_forward
+    - collate_fn to dataobj.get_collate_fn()
+
+
+changes i made to datasets
+- loading data from correct gzip
+- getting vocab from selfies_vocab.json instead
+- encode (taken from VAEModel.selfie_to_tokens)
+- decode (taken from VAEModel.tokens_to_selfie)
+- tokenize_selfies (no longer needed, just return the string because encode handles it)
+- collate_fn (move collate_fn into dataset, use pad_sequence, created alternative for fixed max length of 128, squeezed first dimension to accomodate vae_forward transforms)
+
+
+changes i made to vae
+- forward (return generated z in out_dict)
+- sample (taken from VAEModel.sample)
+- custom_load_state_dict (parser for the state dict)
+
+
+exact same:
+- lolbo.py
+- turbo.py
+- utils.py
+- ppgpr.py
+- base.py
+- guacamol_utils.py (except for path to guacamol_first_20k + removed tdc docking import and methods)

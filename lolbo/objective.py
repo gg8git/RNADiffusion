@@ -7,15 +7,11 @@ from model.mol_vae_model.BaseMolVAE import BaseVAE
 
 
 class MoleculeObjective:
-    """Base class for any latent space optimization task
-    class supports any optimization task with accompanying VAE
-    such that during optimization, latent space points (z)
-    must be passed through the VAE decoder to obtain
-    original input space points (x) which can then
-    be passed into the oracle to obtain objective values (y)"""
+    """MoleculeObjective class supports all molecule optimization
+    tasks and uses the SELFIES VAE by default"""
 
     def __init__(
-        self, 
+        self,
         task_id="pdop",
         path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt",
         xs_to_scores_dict={},
@@ -132,13 +128,7 @@ class MoleculeObjective:
         """Sets self.vae to the desired pretrained vae and
         sets self.dataobj to the corresponding data class
         used to tokenize inputs, etc."""
-        self.dataobj = SELFIESDataset(
-            data_root="data/selfies",
-            split="train",
-            vocab_path="data/selfies_vocab.json"
-        )
-
-        # self.vae = InfoTransformerVAE(dataset=self.dataobj)
+        self.dataobj = SELFIESDataset()
         self.vae = BaseVAE(
             self.dataobj.vocab2idx,
             d_bnk=16,
@@ -152,7 +142,6 @@ class MoleculeObjective:
             encoder_dim_ff=512,
             encoder_num_layers=3,
         )
-
         # load in state dict of trained model:
         if self.path_to_vae_statedict:
             state_dict = torch.load(self.path_to_vae_statedict)
@@ -162,39 +151,6 @@ class MoleculeObjective:
         # set max string length that VAE can generate
         self.vae.max_string_length = self.max_string_length
 
-    # def vae_forward(self, xs_batch):
-    #     """Input:
-    #         a list xs
-    #     Output:
-    #         z: tensor of resultant latent space codes
-    #             obtained by passing the xs through the encoder
-    #         vae_loss: the total loss of a full forward pass
-    #             of the batch of xs through the vae
-    #             (ie reconstruction error)
-    #     """
-    #     # assumes xs_batch is a batch of smiles strings
-    #     X_list = []
-    #     for smile in xs_batch:
-    #         try:
-    #             # avoid re-computing mapping from smiles to selfies to save time
-    #             selfie = self.smiles_to_selfies[smile]
-    #         except:
-    #             selfie = sf.encoder(smile)
-    #             self.smiles_to_selfies[smile] = selfie
-    #         # tokenized_selfie = self.dataobj.tokenize_selfies([selfie])[0]
-    #         # encoded_selfie = self.dataobj.encode(tokenized_selfie).unsqueeze(0)
-    #         encoded_selfie = self.dataobj.encode(selfie)
-    #         import ipdb; ipdb.set_trace()
-    #         X_list.append(encoded_selfie)
-    #     X = self.dataobj.get_collate_fn()(X_list)
-    #     import ipdb; ipdb.set_trace()
-    #     dict = self.vae(X.cuda())
-    #     import ipdb; ipdb.set_trace()
-    #     vae_loss, z = dict["loss"], dict["z"]
-    #     z = z.reshape(z.shape[0], -1)
-
-    #     return z, vae_loss
-    
     def vae_forward(self, xs_batch):
         """Input:
             a list xs
@@ -206,8 +162,7 @@ class MoleculeObjective:
                 (ie reconstruction error)
         """
         # assumes xs_batch is a batch of smiles strings
-        z_list = []
-        loss_list = []
+        X_list = []
         for smile in xs_batch:
             try:
                 # avoid re-computing mapping from smiles to selfies to save time
@@ -215,15 +170,24 @@ class MoleculeObjective:
             except:
                 selfie = sf.encoder(smile)
                 self.smiles_to_selfies[smile] = selfie
-            selfie = f"[start]{selfie}[stop]"
-            enc = sf.selfies_to_encoding(selfie, self.dataobj.vocab2idx, enc_type='label')
-            tokens = torch.tensor(enc, dtype=torch.long).unsqueeze(0).cuda()
-            out = self.vae(tokens)
-            z = out["mu_ign"] + out["sigma_ign"] * torch.randn_like(out["sigma_ign"])
-            z_list.append(z.reshape(-1, self.vae.n_acc * self.vae.d_bnk))
-            loss_list.append(out['loss'])
-        z = torch.cat(z_list, dim=0)
-        vae_loss = torch.stack(loss_list).mean()
+            tokenized_selfie = self.dataobj.tokenize_selfies([selfie])[0]
+            encoded_selfie = self.dataobj.encode(tokenized_selfie).unsqueeze(0)
+            X_list.append(encoded_selfie)
+        X = self.dataobj.get_collate_fn()(X_list)
+        dict = self.vae(X.cuda())
+        vae_loss, z = dict["loss"], dict["z"]
+        z = z.reshape(-1, self.dim)
 
         return z, vae_loss
 
+
+if __name__ == "__main__":
+    # testing molecule objective
+    obj1 = MoleculeObjective(task_id="pdop")
+    print(obj1.num_calls)
+    dict1 = obj1(torch.randn(10, 256))
+    print(dict1["scores"], obj1.num_calls)
+    dict1 = obj1(torch.randn(3, 256))
+    print(dict1["scores"], obj1.num_calls)
+    dict1 = obj1(torch.randn(1, 256))
+    print(dict1["scores"], obj1.num_calls)

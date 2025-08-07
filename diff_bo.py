@@ -1,6 +1,5 @@
 import random
 import warnings
-import json
 
 import fire
 import numpy as np
@@ -15,7 +14,6 @@ import os
 os.environ["WANDB_SILENT"] = "True"
 from lolbo.objective import MoleculeObjective
 from lolbo.lolbo import LOLBOState
-from data.guacamol_utils import load_molecule_train_data, compute_train_zs
 
 try:
     import wandb
@@ -24,8 +22,11 @@ try:
 except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
+from lolbo.objective import MoleculeObjective
+from data.guacamol_utils import load_molecule_train_data, compute_train_zs
 
-class Optimize():
+
+class Optimize(object):
     """
     Run LOLBO Optimization
     Args:
@@ -135,6 +136,7 @@ class Optimize():
             verbose=verbose,
         )
 
+        # add args to method args dict to be logged by wandb
         self.method_args["molopt"] = locals()
         del self.method_args["molopt"]["self"]
 
@@ -226,18 +228,10 @@ class Optimize():
         """Main optimization loop"""
         # creates wandb tracker iff self.track_with_wandb == True
         self.create_wandb_tracker()
-        # self.local_log_json = {}
         # main optimization loop
         while self.lolbo_state.objective.num_calls < self.max_n_oracle_calls:
             print(f'new loop, num calls: {self.lolbo_state.objective.num_calls}, curr best: {self.lolbo_state.best_score_seen}')
 
-            # self.local_log_json[self.lolbo_state.objective.num_calls] = {
-            #     'score': self.lolbo_state.best_score_seen.float().detach().cpu().item()
-            # }
-            # file_path = "./log.json"
-            # with open(file_path, "w") as f:
-            #     json.dump(self.local_log_json, f, indent=4)
-            
             self.log_data_to_wandb_on_each_loop()
             # update models end to end when we fail to make
             #   progress e2e_freq times in a row (e2e_freq=10 by default)
@@ -306,13 +300,6 @@ def new(**kwargs):
 
 
 if __name__ == "__main__":
-    optimization_run = Optimize(
-        task_id="pdop",
-        num_initialization_points=500,
-        max_n_oracle_calls=10000,
-        k=10,
-    )
-    optimization_run.run_lolbo()
+    fire.Fire(Optimize)
 
-
-# --task_id pdop --num_initialization_points 500 --max_n_oracle_calls 10000 --k 10 --track_with_wandb True --wandb_entity gg8-university-of-pennsylvania --wandb_project_name lolbo-proj - run_lolbo - done
+# python3 diff_bo.py --task_id pdop --num_initialization_points 500 --max_n_oracle_calls 10000 --k 10 - run_lolbo - done

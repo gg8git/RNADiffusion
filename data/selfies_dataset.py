@@ -45,64 +45,78 @@ class SELFIESDataModule(pl.LightningDataModule):
 
 
 class SELFIESDataset(Dataset):
-    def __init__(self, data_root: str, split: str, vocab: dict[str, int] = None, vocab_path: str = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        fname=None,
+        load_data=False,
+    ):
+        self.data = []
+        if load_data:
+            assert fname is not None
+            with gzip.open(fname, 'rt') as f:
+                selfie_strings = [x.strip() for x in f.readlines()]
+            for string in selfie_strings:
+                self.data.append(list(sf.split_selfies(string)))
 
-        self.data_root = data_root
-        self.split = split
+        with open("data/selfies_vocab.json") as f:
+            self.vocab2idx = json.load(f)
+        self.vocab = self.vocab2idx.keys()
 
-        assert (not (vocab is None and vocab_path is None))
-        if vocab is None:
-            with open(vocab_path) as f:
-                vocab = json.load(f)
-
-        self.vocab = vocab.keys()
-        self.vocab2idx = vocab
-
-        path = Path(data_root) / f'{split}_selfie.gz'
-
-        with gzip.open(path, 'rt') as f:
-            self.selfies = [l.strip() for l in f.readlines()]
-
-    def __len__(self) -> int:
-        return len(self.selfies)
-
-    def __getitem__(self, index: int) -> torch.Tensor:
-        return self.encode(self.data[index])
-    
     def tokenize_selfies(self, selfies_list):
-        tokenized_selfies = []
-        for selfie in selfies_list:
-            tokenized_selfies.append(fast_split(selfie))
-        return tokenized_selfies
+        # tokenized_selfies = []
+        # for string in selfies_list:
+        #     tokenized_selfies.append(list(sf.split_selfies(string)))
+        # return tokenized_selfies
+        return selfies_list
 
     def encode(self, selfie):
-        selfie =  f"[start]{selfie}[stop]"
+        selfie = f"[start]{selfie}[stop]"
+        enc = sf.selfies_to_encoding(selfie, self.vocab2idx, enc_type='label')
+        return torch.tensor(enc, dtype=torch.long)
 
-        tokens = fast_split(selfie)
-        tokens = torch.tensor([self.vocab2idx[tok] for tok in tokens])
-
-        return tokens
-    
-    def decode(self, tokens):
+    def decode(self, tokens, drop_after_stop=True):
         try :
             selfie = sf.encoding_to_selfies(tokens.squeeze().tolist(), {v:k for k,v in self.vocab2idx.items()}, 'label')
         except:
             selfie = '[C]'
         
-        if '[stop]' in selfie:
+        if drop_after_stop and '[stop]' in selfie:
             selfie = selfie[:selfie.find('[stop]')]
         if '[pad]' in selfie:
             selfie = selfie[:selfie.find('[pad]')]
         if '[start]' in selfie:
             selfie = selfie[selfie.find('[start]') + len('[start]'):]
         return selfie
-    
-    def get_collate_fn(self):
-        def collate(batch: List[torch.Tensor]) -> torch.Tensor:
-            return pad_sequence(batch, batch_first=True, padding_value=self.vocab2idx['[pad]'])
-        return collate
 
-# Faster than sf.split_selfies because it doesn't check for invalid selfies
-def fast_split(selfie: str) -> list[str]:
-    return [f"[{tok}" for tok in selfie.split("[") if tok]
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.encode(self.data[idx])
+
+    @property
+    def vocab_size(self):
+        return len(self.vocab)
+    
+    def get_collate_fn(self, fix_len=None):
+        if fix_len and isinstance(fix_len, int):
+            def collate(batch: List[torch.Tensor]) -> torch.Tensor:
+                batch = [x.squeeze(0) for x in batch]
+                padded_batch = []
+                for x in batch:
+                    length = x.size(0)
+                    if length < fix_len:
+                        # Pad to the right
+                        pad_size = fix_len - length
+                        padded_x = F.pad(x, (0, pad_size), value=self.vocab2idx['[pad]'])
+                    else:
+                        # Truncate
+                        padded_x = x[:fix_len]
+                    padded_batch.append(padded_x)
+                
+                return torch.stack(padded_batch, dim=0)
+        else:
+            def collate(batch: List[torch.Tensor]) -> torch.Tensor:
+                batch = [x.squeeze(0) for x in batch]
+                return pad_sequence(batch, batch_first=True, padding_value=self.vocab2idx['[pad]'])
+        return collate

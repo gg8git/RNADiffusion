@@ -1,6 +1,5 @@
-from collections import OrderedDict
-
 import torch
+from collections import OrderedDict
 
 
 class Swish(torch.nn.Module):

@@ -57,13 +57,13 @@ def main():
 
     logger = WandbLogger(project="SELFIES_Diffusion", offline=False, name="LowMany")
 
-    check = ModelCheckpoint(every_n_train_steps=1024, save_top_k=-1, save_last=True)
+    check = ModelCheckpoint(every_n_train_steps=1024, save_top_k=20, save_last=True)
 
     trainer = L.Trainer(
         accelerator="gpu",
         devices=-1,
         logger=logger,
-        max_epochs=20_000,
+        max_epochs=100,
         inference_mode=True,
         precision="bf16-mixed",
         callbacks=[TQDMProgressBar(), check],

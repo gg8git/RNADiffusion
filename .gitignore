@@ -169,4 +169,6 @@ checkpoints/*.ckpt
 data/low_PSI_data.tsv
 data/low_psi_filter.tsv
 data/selfies
+data/guacamol
+log.json
 checkpoints

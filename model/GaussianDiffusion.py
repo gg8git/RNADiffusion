@@ -208,9 +208,9 @@ class GaussianDiffusion1D(nn.Module):
         self,
         x,
         t,
+        maybe_clip,
         class_labels,
         x_self_cond=None,
-        clip_x_start=False,
         rederive_pred_noise=False,
     ):
         assert (
@@ -219,16 +219,12 @@ class GaussianDiffusion1D(nn.Module):
 
         model_output = self.model(x, t, x_self_cond, class_labels=class_labels)
 
-        maybe_clip = (
-            partial(torch.clamp, min=LMIN, max=LMAX) if clip_x_start else identity
-        )
-
         if self.objective == "pred_noise":
             pred_noise = model_output
             x_start = self.predict_start_from_noise(x, t, pred_noise)
             x_start = maybe_clip(x_start)
 
-            if clip_x_start and rederive_pred_noise:
+            if rederive_pred_noise:
                 pred_noise = self.predict_noise_from_start(x, t, x_start)
 
         elif self.objective == "pred_x0":
@@ -327,21 +323,22 @@ class GaussianDiffusion1D(nn.Module):
         ), "class_labels must be provided for model_predictions"
         assert (self.objective == "pred_noise"), "model must predict noise for score conditioning"
 
-        x = x.clone().detach().requires_grad_(True)
-        pred_noise = self.model(x, t, x_self_cond, class_labels=class_labels)
+        with torch.enable_grad():
+            x = x.clone().detach().requires_grad_(True)
+            pred_noise = self.model(x, t, x_self_cond, class_labels=class_labels)
 
-        maybe_clip = (
-            partial(torch.clamp, min=LMIN, max=LMAX) if clip_x_start else identity
-        )
+            maybe_clip = (
+                partial(torch.clamp, min=LMIN, max=LMAX) if clip_x_start else identity
+            )
 
-        x_start = self.predict_start_from_noise(x, t, pred_noise)
-        cond_loss = cond_fn(x_start, t)
-        cond_grad = torch.autograd.grad(
-            cond_loss,
-            x,
-            create_graph=True,
-            retain_graph=True
-        )[0]
+            x_start = self.predict_start_from_noise(x, t, pred_noise)
+            cond_loss = cond_fn(x_start, t)
+            cond_grad = torch.autograd.grad(
+                cond_loss,
+                x,
+                create_graph=True,
+                retain_graph=True
+            )[0]
         
         pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_grad
         x_start = self.predict_start_from_noise(x, t, pred_noise)
@@ -349,8 +346,144 @@ class GaussianDiffusion1D(nn.Module):
 
         return ModelPrediction(pred_noise, x_start)
 
+
+    # def bounds_loss(self, x, bounds, loss_type="hinge"):
+    #     x = x.reshape(x.shape[0], -1)
+    #     lb, ub = bounds[0], bounds[1]
+    #     widths = bounds[1] - bounds[0]
+
+    #     if loss_type == "hinge":
+    #         lower_violation = F.relu(lb - x)
+    #         upper_violation = F.relu(x - ub)
+    #         loss = lower_violation.pow(2) + upper_violation.pow(2)
+
+    #         return loss.mean()
+        
+    #     elif loss_type == "huber":
+    #         delta = widths.mean() / 5.0
+
+    #         lower_violation = F.relu(lb - x)
+    #         upper_violation = F.relu(x - ub)
+    #         loss = (lower_violation.pow(2) + upper_violation.pow(2)) / (2 * delta)
+
+    #         return loss.mean()
+        
+    #     elif loss_type == "softplus":
+    #         beta = 10.0 / widths.mean()
+
+    #         lower_violation = torch.nn.functional.softplus(lb - x, beta=beta)
+    #         upper_violation = torch.nn.functional.softplus(x - ub, beta=beta)
+    #         loss = lower_violation.pow(2) + upper_violation.pow(2)
+
+    #         return loss.mean()
+        
+    #     elif loss_type == "logbarrier":
+    #         over = torch.clamp(x - ub, min=0.0)
+    #         under = torch.clamp(lb - x, min=0.0)
+            
+    #         safe_over = torch.clamp(1.0 - over, min=1e-6)
+    #         safe_under = torch.clamp(1.0 - under, min=1e-6)
+            
+    #         loss = -torch.log(safe_over) - torch.log(safe_under)
+            
+    #         return loss.sum()
+
+    # def condition_mean_model_predictions(
+    #     self,
+    #     cond_fn,
+    #     bounds,
+    #     x,
+    #     t,
+    #     class_labels,
+    #     x_self_cond=None,
+    #     clip_x_start=False,
+    #     grad_scale=1.0,
+    #     bounds_weight=1.0,
+    # ):
+    #     assert (
+    #         class_labels is not None or not self.model.needs_class_labels
+    #     ), "class_labels must be provided for model_predictions"
+    #     assert (self.objective == "pred_noise"), "model must predict noise for score conditioning"
+
+    #     maybe_clip = (
+    #         partial(torch.clamp, min=LMIN, max=LMAX) if clip_x_start else identity
+    #     )
+
+    #     with torch.enable_grad():
+    #         x = x.clone().detach().requires_grad_(True)
+    #         pred_noise = self.model(x, t, x_self_cond, class_labels=class_labels)
+
+    #         x_start = self.predict_start_from_noise(x, t, pred_noise)
+    #         x_start = maybe_clip(x_start)
+
+    #         fn_loss = cond_fn(x_start, t) if exists(cond_fn) else 0
+    #         bounds_loss = self.bounds_loss(x_start, bounds) if exists(bounds) else 0
+
+    #         bounds_mask = (x_start.reshape(x_start.shape[0], -1) >= bounds[0].unsqueeze(0)) & (x_start.reshape(x_start.shape[0], -1) <= bounds[1].unsqueeze(0))
+    #         bounds_acc = bounds_mask.float().mean()
+    #         print(f'x_start min: {x_start.min().item()}, x_start max: {x_start.max().item()}, bounds_loss: {bounds_loss.item()}, bounds_acc: {bounds_acc.item()}')
+
+    #         cond_loss = fn_loss + bounds_weight * bounds_loss
+    #         cond_grad = torch.autograd.grad(
+    #             cond_loss,
+    #             x,
+    #             create_graph=True,
+    #             retain_graph=True
+    #         )[0]
+
+    #     x = x - grad_scale * cond_grad
+
+    #     with torch.no_grad():
+    #         x = x.clone().detach().requires_grad_(False)
+    #         pred_noise = self.model(x, t, x_self_cond, class_labels=class_labels)
+
+    #         x_start = self.predict_start_from_noise(x, t, pred_noise)
+    #         x_start = maybe_clip(x_start)
+
+    #         return ModelPrediction(pred_noise, x_start)
+    
+    def condition_mean_model_predictions(
+        self,
+        cond_fn,
+        maybe_clip,
+        x,
+        t,
+        class_labels,
+        x_self_cond=None,
+        grad_scale=1.0,
+    ):
+        assert (
+            class_labels is not None or not self.model.needs_class_labels
+        ), "class_labels must be provided for model_predictions"
+        assert (self.objective == "pred_noise"), "model must predict noise for score conditioning"
+
+        with torch.enable_grad():
+            x = x.clone().detach().requires_grad_(True)
+            pred_noise = self.model(x, t, x_self_cond, class_labels=class_labels)
+
+            x_start = self.predict_start_from_noise(x, t, pred_noise)
+
+            cond_loss = cond_fn(x_start, t)
+            cond_grad = torch.autograd.grad(
+                cond_loss,
+                x,
+                create_graph=True,
+                retain_graph=True
+            )[0]
+
+        x = x - grad_scale * cond_grad
+
+        with torch.no_grad():
+            x = x.clone().detach().requires_grad_(False)
+            pred_noise = self.model(x, t, x_self_cond, class_labels=class_labels)
+
+            x_start = self.predict_start_from_noise(x, t, pred_noise)
+            x_start = maybe_clip(x_start)
+
+            return ModelPrediction(pred_noise, x_start)
+
     @torch.no_grad()
-    def ddim_sample(self, shape, eta=None, sampling_timesteps=None, grad_scale=1.0, cond_fn=None, clip_denoised=True, class_labels=None):
+    def ddim_sample(self, shape, eta=None, sampling_timesteps=None, grad_scale=1.0, clip_denoised=True, class_labels=None, cond_fn=None, bounds=None, score_cond=False):
         assert (
             class_labels is not None or not self.model.needs_class_labels
         ), "class_labels must be provided for ddim_sample"
@@ -366,6 +499,12 @@ class GaussianDiffusion1D(nn.Module):
         maybe_clip = (
             partial(torch.clamp, min=LMIN, max=LMAX) if clip_denoised else identity
         )
+        if exists(bounds):
+            def maybe_clip(x):
+                batch_size, channels, seq_length = x.shape
+                x = x.reshape(batch_size, -1)
+                x = torch.max(torch.min(x, bounds[1].unsqueeze(0)), bounds[0].unsqueeze(0))
+                return x.reshape(batch_size, channels, seq_length)
 
         times = torch.linspace(
             -1, total_timesteps - 1, steps=sampling_timesteps + 1
@@ -389,20 +528,18 @@ class GaussianDiffusion1D(nn.Module):
             alpha_next = self.alphas_cumprod[time_next]
 
             if exists(cond_fn) and self.objective == "pred_noise":
-                with torch.enable_grad():
-                    pred_noise, x_start, *_ = self.condition_score_model_predictions(
-                        cond_fn, img, time_cond, alpha,
-                        class_labels=class_labels,
-                        x_self_cond=self_cond,
-                        clip_x_start=clip_denoised,
-                        grad_scale=grad_scale,
-                    )
-            else:
-                pred_noise, x_start, *_ = self.model_predictions(
-                    img, time_cond,
+                cond_predictions = self.condition_score_model_predictions if score_cond else self.condition_mean_model_predictions
+                pred_noise, x_start, *_ = cond_predictions(
+                    cond_fn, maybe_clip, img, time_cond,
                     class_labels=class_labels,
                     x_self_cond=self_cond,
-                    clip_x_start=clip_denoised,
+                    grad_scale=grad_scale,
+                )
+            else:
+                pred_noise, x_start, *_ = self.model_predictions(
+                    img, time_cond, maybe_clip,
+                    class_labels=class_labels,
+                    x_self_cond=self_cond,
                 )
 
             if time_next < 0:
@@ -424,9 +561,9 @@ class GaussianDiffusion1D(nn.Module):
         # either this or nudging x_start (read blog to learn)
 
         # if nudging x_start, take in x_start, then: x_start = x_start + smt, pred_noise = predict_noise_from_start()
-        # pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_fn(x, t) / alpha.sqrt()
-        # pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_fn(x_start, t)
-        pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * (cond_fn(x_start, t) - alpha.sqrt() * cond_fn(x, t)) / (1 - alpha).sqrt()
+        pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_fn(x_start, t) / alpha.sqrt()
+        # pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * cond_fn(x, t)
+        # pred_noise = pred_noise - (1 - alpha).sqrt() * grad_scale * (cond_fn(x_start, t) - alpha.sqrt() * cond_fn(x, t)) / (1 - alpha).sqrt()
         x_start = self.predict_start_from_noise(x, t, pred_noise)
         return pred_noise, x_start
 

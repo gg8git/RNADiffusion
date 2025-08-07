@@ -10,8 +10,6 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 import selfies as sf
-from model.mol_vae_model.BaseMolVAE import BaseVAE
-from model.mol_vae_model.MolVAE import VAEModule
 from model.mol_vae_model.wrapper import VAEWrapper
 
 device = torch.device("cuda")

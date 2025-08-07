@@ -2,7 +2,7 @@ import lightning.pytorch as pl
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.distributions import kl_divergence, Normal
+from torch.distributions import kl_divergence, Normal, Categorical
 from hnn_utils import nn as HNN
 
 from model.mol_vae_model.components import Embedding, causal_mask, TransformerDecoderLayer, TransformerEncoderLayer
@@ -139,18 +139,55 @@ class BaseVAE(pl.LightningModule):
 
         return dict(
             loss=loss,
+            z=z,
             recon_loss=recon_loss,
             kldiv=kldiv,
             token_acc=token_acc,
+            recon_token_acc=(logits.argmax(dim=-1) == tokens).float().mean(),
             string_acc=string_acc,
+            recon_string_acc=(logits.argmax(dim=-1) == tokens).all(dim=1).float().mean(dim=0),
             sigma_mean=sigma_mean,
             mu_ign=mu,
             sigma_ign=sigma,
             kl_factor=kl_fac
         )
+    
+    @torch.inference_mode()
+    def sample(self, z: torch.Tensor, argmax=True, max_len=256):
+        self.eval()
+
+        z = z.cuda()
+
+        tokens = torch.full((z.shape[0], 1), fill_value=self.start_tok, dtype=torch.long).cuda()
+        while True: # Loop until every molecule hits a stop token
+            logits = self.decode(z, tokens)[:, -1:]
+            if argmax:
+                sample = logits.argmax(dim=-1)
+            else:
+                sample = Categorical(logits=logits).sample()
+
+            tokens = torch.cat([tokens, sample], dim=-1)
+
+            if (tokens == self.stop_tok).any(dim=-1).all() or tokens.shape[1] > max_len:
+                break
+        
+        return tokens[:, 1:] # Cut out start token
 
     def add_acc_toks(self):
         self.register_parameter('acc_toks', nn.Parameter(torch.randn(1, self.n_acc, self.d_enc)))
+    
+    def custom_load_state_dict(self, state_dict, strict=True):
+        state_dict = state_dict["state_dict"]
+
+        new_state_dict = {}
+        for key in state_dict.keys():
+            if key.startswith("model."):
+                new_key = key[6:]  # remove the 'model.' prefix
+            else:
+                new_key = key
+            new_state_dict[new_key] = state_dict[key]
+        
+        self.load_state_dict(new_state_dict, strict)
 
     @property
     def start_tok(self):

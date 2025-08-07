@@ -9,9 +9,9 @@ from lightning.pytorch.loggers import WandbLogger
 
 from data.diffusion_datamodule import DiffusionDataModule
 from model.mol_vae_model.wrapper import VAEWrapper
-from model.pdop_pred_model.conv_predictor import ConvScorePredictor
-from model.pdop_pred_model.linear_predictor import LinearScorePredictor
-from model.pdop_pred_model.mol_utils import smile_to_guacamole_score
+from model.mol_score_model.conv_predictor import ConvScorePredictor
+from model.mol_score_model.linear_predictor import LinearScorePredictor
+from data.guacamol_utils import smile_to_guacamole_score
 
 torch.set_float32_matmul_precision("medium")
 
@@ -110,7 +110,7 @@ def main():
     check = ModelCheckpoint(
         monitor="val/loss",         # monitor validation loss
         mode="min",                 # minimize val/loss
-        save_top_k=1,               # keep only the best checkpoint
+        save_top_k=3,               # keep only the best checkpoint
         save_last=True,             # also save the last epoch
         every_n_epochs=2           # checkpoint less often for long training
     )
@@ -126,7 +126,7 @@ def main():
         devices=-1,
         logger=logger,
         max_epochs=50,
-        check_val_every_n_epoch=10,  
+        check_val_every_n_epoch=1,  
         precision="bf16-mixed",
         inference_mode=True,
         callbacks=[TQDMProgressBar(), check, early],

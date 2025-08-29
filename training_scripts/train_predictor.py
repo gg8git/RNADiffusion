@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMProgressBar, EarlyStopping
 from lightning.pytorch.loggers import WandbLogger
 
-from data.diffusion_datamodule import DiffusionDataModule
+from RNADiffusion.data.diffusion_datamodule import DiffusionDataModule
 from model.mol_vae_model.wrapper import VAEWrapper
 from model.mol_score_model.conv_predictor import ConvScorePredictor
 from model.mol_score_model.linear_predictor import LinearScorePredictor

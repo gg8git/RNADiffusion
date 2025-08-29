@@ -160,15 +160,10 @@ cython_debug/
 #.idea/
 
 wandb
+data
 RNA_Diffusion
 SELFIES_Diffusion
-data/pretrain
-data/*.pt
-data/high_PSI_data.tsv
 checkpoints/*.ckpt
-data/low_PSI_data.tsv
-data/low_psi_filter.tsv
-data/selfies
-data/guacamol
-log.json
+results
+log*
 checkpoints

@@ -6,15 +6,16 @@ from torch.utils.data import DataLoader, Dataset
 
 
 class DiffusionDataModule(L.LightningDataModule):
-    def __init__(self, data_dir, batch_size: int, num_workers: int) -> None:
+    def __init__(self, data_dir, batch_size: int, num_workers: int, dataset: Dataset = None) -> None:
         super().__init__()
 
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.dataset = dataset if dataset else LatentDataset
 
     def train_dataloader(self) -> DataLoader:
-        train_data = LatentDataset(self.data_dir, "train")
+        train_data = self.dataset(self.data_dir, "train")
         return DataLoader(
             train_data,
             batch_size=self.batch_size,
@@ -25,7 +26,7 @@ class DiffusionDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:
-        val_data = LatentDataset(self.data_dir, "val")
+        val_data = self.dataset(self.data_dir, "val")
         return DataLoader(
             val_data,
             batch_size=self.batch_size,
@@ -36,7 +37,7 @@ class DiffusionDataModule(L.LightningDataModule):
         )
     
     def test_dataloader(self) -> DataLoader:
-        test_data = LatentDataset(self.data_dir, "test")
+        test_data = self.dataset(self.data_dir, "test")
         return DataLoader(
             test_data,
             batch_size=self.batch_size,
@@ -57,6 +58,30 @@ class LatentDataset(Dataset):
     def __getitem__(self, idx: int):
         z = self.m[idx] + self.s[idx] * torch.randn_like(self.m[idx])
         return z
+
+class LatentDatasetClassifier(Dataset):
+    def __init__(self, data_dir: str, split: str) -> None:
+        self.m, self.s, self.cls, _, _ = torch.load(f"{data_dir}/low_all_{split}.pt")
+
+    def __len__(self) -> int:
+        return len(self.m)
+
+    def __getitem__(self, idx: int):
+        z = self.m[idx] + self.s[idx] * torch.randn_like(self.m[idx])
+        cls = self.cls[idx]
+        return z, cls
+
+class LatentDatasetDescriptors(Dataset):
+    def __init__(self, data_dir: str, split: str) -> None:
+        self.m, self.s, self.cls, self.qed, self.fsp3 = torch.load(f"{data_dir}/low_all_{split}.pt")
+
+    def __len__(self) -> int:
+        return len(self.m)
+
+    def __getitem__(self, idx: int):
+        z = self.m[idx] + self.s[idx] * torch.randn_like(self.m[idx])
+        cls, qed, fsp3 = self.cls[idx], self.qed[idx], self.fsp3[idx]
+        return z, cls, qed, fsp3
 
 
 class LatentDatasetCond(Dataset):

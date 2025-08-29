@@ -114,7 +114,7 @@ class VAEWrapper(L.LightningModule):
         with torch.no_grad():
             # Use VAEModule's sample method to generate tokens
             tokens = self.vae.sample(
-                z.reshape(-1, self.vae.model.n_acc * self.vae.model.d_bnk),
+                z,
                 argmax=argmax,
                 max_len=max_len
             )
@@ -137,4 +137,4 @@ class VAEWrapper(L.LightningModule):
 
     def sample_selfies_from_prior(self, batch_size=32):
         z = torch.randn(batch_size, self.vae.model.n_acc, self.vae.model.d_bnk)
-        return self.latent_to_selfies(z)
+        return self.latent_to_selfies(z), z

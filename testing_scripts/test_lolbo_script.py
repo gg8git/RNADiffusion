@@ -12,7 +12,6 @@ RDLogger.DisableLog("rdApp.*")
 import os
 
 os.environ["WANDB_SILENT"] = "True"
-from lolbo.objective import MoleculeObjective
 from lolbo.lolbo import LOLBOState
 
 try:
@@ -22,7 +21,8 @@ try:
 except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
-from lolbo.objective import MoleculeObjective
+# from lolbo.objective import MoleculeObjective
+from lolbo.objective_lolbo import MoleculeObjective
 from data.guacamol_utils import load_molecule_train_data, compute_train_zs
 
 
@@ -68,7 +68,7 @@ class Optimize(object):
         update_e2e: bool = True,
         k: int = 1_000,
         verbose: bool = True,
-        path_to_vae_statedict: str = "checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt",
+        path_to_vae_statedict: str = "checkpoints/SELFIES_VAE_LOLBO/SELFIES-VAE-state-dict.pt",
         max_string_length: int = 1024,
     ):
         self.path_to_vae_statedict = path_to_vae_statedict

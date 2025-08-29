@@ -42,7 +42,8 @@ class VAEModule(pl.LightningModule):
         training = self.training
         self.eval()
 
-        z = z.reshape(-1, self.model.n_acc, self.model.d_bnk).to(self.device)
+        # z = z.reshape(-1, self.model.n_acc, self.model.d_bnk).to(self.device)
+        z = z.to(self.device)
         if hasattr(self, 'decoder_neck'):
             z = self.decoder_neck(z.flatten(1)).reshape(z.shape[0], self.n_bn, self.d_decoder)
 

@@ -1,5 +1,6 @@
 import math
 from collections import namedtuple
+from collections.abc import Callable
 from functools import partial
 from random import random
 
@@ -69,6 +70,8 @@ class GaussianDiffusion1D(nn.Module):
         beta_schedule="cosine",
         ddim_sampling_eta=0.0,
         loss_type="mse",
+        s_noise=1.0,
+        solver_type="midpoint",
     ):
         super().__init__()
         self.model = model
@@ -79,6 +82,10 @@ class GaussianDiffusion1D(nn.Module):
         self.seq_length = seq_length
 
         self.loss_type = loss_type
+
+        self.s_noise = s_noise
+
+        self.solver_type = solver_type
 
         self.objective = objective
 
@@ -119,6 +126,8 @@ class GaussianDiffusion1D(nn.Module):
         register_buffer("betas", betas)
         register_buffer("alphas_cumprod", alphas_cumprod)
         register_buffer("alphas_cumprod_prev", alphas_cumprod_prev)
+        # register_buffer("sigmas", torch.sqrt((1.0 - self.alphas_cumprod) / self.alphas_cumprod))
+        self.sigmas = (torch.sqrt((1.0 - self.alphas_cumprod) / self.alphas_cumprod)).to(torch.float32)
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
 
@@ -304,6 +313,225 @@ class GaussianDiffusion1D(nn.Module):
         x = torch.randn(shape, device=device)
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'DDPM Sampling loop time step', total=self.num_timesteps, leave=False):
             x, x_start = self.p_sample(x, t, clip_denoised=clip_denoised, cond_fn=cond_fn)
+
+        return x
+
+    @torch.no_grad()
+    def dpmpp2m_sample(
+        self,
+        # batch_size: int = 16,
+        shape,
+        eta = None,
+        sampling_timesteps = None,
+        guidance_scale: float = 1.0,
+        clip_denoised=True,
+        cond_fn: Callable | None = None,
+    ) -> torch.Tensor:
+
+        batch_size, device, total_timesteps, sampling_timesteps, eta = (
+            shape[0],
+            self.betas.device,
+            self.num_timesteps,
+            sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
+            eta if exists(eta) else self.ddim_sampling_eta,
+        )
+
+        maybe_clip = (
+            partial(torch.clamp, min=LMIN, max=LMAX) if clip_denoised else identity
+        )
+        
+        # uniformly spaced timesteps [0, num_timesteps - 1]
+        timesteps = torch.linspace(0, total_timesteps - 1, sampling_timesteps, dtype=torch.long, device=device)
+        timesteps = list(reversed(timesteps.tolist()))
+        # build sigma schedule and append 0 at the end
+        sigmas = torch.cat([
+            self.sigmas[timesteps],
+            self.sigmas.new_zeros(1)
+        ], dim=0)
+
+        # initial noise scaled by sigma[0]
+        x = torch.randn(shape, device=device) * sigmas[0]
+
+        # precompute logs for ratio calculations
+        log_sigmas = torch.log(sigmas + 1e-12)
+        old_denoised = None
+
+        for i in tqdm(range(len(sigmas) - 1), desc="DPMPP2M Sampling Loop Time Step"):
+            sigma_t = sigmas[i]
+            sigma_next = sigmas[i + 1]
+            t_index = int(timesteps[i]) if i < len(timesteps) else 0
+            time_cond = torch.full((batch_size,), t_index, device=device, dtype=torch.long)
+
+            # predict model output noise ε
+            eps = self.model(x, time_cond)
+
+            # guidance
+            alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
+            if cond_fn is not None:
+                _x0_hat = self.predict_start_from_noise(x, time_cond, eps)
+                grad = F.normalize(cond_fn(_x0_hat, time_cond), dim=-1)
+                eps = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
+            
+            # denoised x0 estimate
+            x0_hat = self.predict_start_from_noise(x, time_cond, eps)
+            denoised = x0_hat
+            if sigma_next.item() == 0:
+                x = maybe_clip(denoised)
+                break
+            
+            # update coefficients
+            r1 = sigma_next / sigma_t
+            r2 = (sigma_t / sigma_next) - 1.0
+            if old_denoised is None:
+                x = r1 * x - r2 * denoised
+            else:
+                h_last = log_sigmas[i - 1] - log_sigmas[i]
+                h = log_sigmas[i] - log_sigmas[i + 1]
+                r = h_last / (h + 1e-12)
+                denoised_d = (1.0 + 1.0 / (2.0 * r)) * denoised - (1.0 / (2.0 * r)) * old_denoised
+                x = r1 * x - r2 * denoised_d
+            old_denoised = denoised
+            x = maybe_clip(x)
+        
+        return x
+
+    @torch.no_grad()
+    def dpmpp2msde_sample(
+        self,
+        # batch_size: int = 16,
+        shape,
+        eta = None,
+        sampling_timesteps = None,
+        guidance_scale: float = 1.0,
+        clip_denoised=True,
+        cond_fn: Callable | None = None,
+    ) -> torch.Tensor:
+        
+        batch_size, device, total_timesteps, sampling_timesteps, eta = (
+            shape[0],
+            self.betas.device,
+            self.num_timesteps,
+            sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
+            eta if exists(eta) else self.ddim_sampling_eta,
+        )
+
+        maybe_clip = (
+            partial(torch.clamp, min=LMIN, max=LMAX) if clip_denoised else identity
+        )
+
+        timesteps = torch.linspace(0, total_timesteps - 1, sampling_timesteps, dtype=torch.long, device=device)
+        timesteps = list(reversed(timesteps.tolist()))
+        sigmas = torch.cat([
+            self.sigmas[timesteps],
+            self.sigmas.new_zeros(1)
+        ], dim=0)
+
+        x = torch.randn(shape, device=device) * sigmas[0]
+
+        log_sigmas = torch.log(sigmas + 1e-12)
+        old_denoised = None
+        h_last = None
+
+        for i in tqdm(range(len(sigmas) - 1), desc="DPMPP2MSDE Sampling Loop Time Step"):
+            sigma_t = sigmas[i]
+            sigma_next = sigmas[i + 1]
+            t_index = int(timesteps[i]) if i < len(timesteps) else 0
+            time_cond = torch.full((batch_size,), t_index, device=device, dtype=torch.long)
+
+            eps = self.model(x, time_cond)
+
+            alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
+            if cond_fn is not None:
+                _x0_hat = self.predict_start_from_noise(x, time_cond, eps)
+                grad = F.normalize(cond_fn(_x0_hat, time_cond), dim=-1)
+                eps = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
+            
+            x0_hat = self.predict_start_from_noise(x, time_cond, eps)
+            denoised = x0_hat
+            if sigma_next.item() == 0:
+                x = maybe_clip(denoised)
+                break
+            h = log_sigmas[i] - log_sigmas[i + 1]
+            eta_h = eta * h
+            exp_neg_eta_h = torch.exp(-eta_h)
+            second_coeff = 1.0 - torch.exp(-(h + eta_h))
+            x = (sigma_next / sigma_t) * exp_neg_eta_h * x + second_coeff * denoised
+            
+            if old_denoised is not None:
+                r = h_last / (h + 1e-12)
+                if self.solver_type == 'heun':
+                    corr = second_coeff / (-(h + eta_h)) + 1.0
+                    x = x + corr * (1.0 / r) * (denoised - old_denoised)
+                else:
+                    x = x + 0.5 * second_coeff * (1.0 / r) * (denoised - old_denoised)
+            if eta != 0.0:
+                noise_scale = torch.sqrt(1.0 - torch.exp(-2.0 * eta_h))
+                x = x + torch.randn_like(x) * sigma_next * noise_scale * self.s_noise
+            old_denoised = denoised
+            h_last = h
+            x = maybe_clip(x)
+
+        return x
+    
+    @torch.no_grad()
+    def ddim_sample_haydn(
+        self,
+        # batch_size: int = 16,
+        shape,
+        eta = None,
+        sampling_timesteps = None,
+        guidance_scale: float = 1.0,
+        clip_denoised=True,
+        cond_fn: Callable | None = None,
+    ) -> torch.Tensor:
+        
+        batch_size, device, total_timesteps, sampling_timesteps, eta = (
+            shape[0],
+            self.betas.device,
+            self.num_timesteps,
+            sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
+            eta if exists(eta) else self.ddim_sampling_eta,
+        )
+
+        maybe_clip = (
+            partial(torch.clamp, min=LMIN, max=LMAX) if clip_denoised else identity
+        )
+
+        times = torch.linspace(-1, self.num_timesteps - 1, steps=sampling_timesteps + 1)
+        times = list(reversed(times.int().tolist()))
+        time_pairs = list(zip(times[:-1], times[1:]))  # [(T-1, T-2), (T-2, T-3), ..., (1, 0), (0, -1)]
+
+        x = torch.randn(shape, device=device)
+        x0_hat = None
+
+        for time, time_next in tqdm(time_pairs, desc="DDIM Sampling Loop Time Step"):
+            time_cond = torch.full((batch_size,), time, device=device, dtype=torch.long)
+
+            # 1) Predict eps
+            eps = self.model(x, time_cond)
+
+            # 2) Guidance: eps_hat = eps − sqrt(1 − alpha_bar_t) * del_{x_t} log f(y|x_t)
+            alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
+            if cond_fn is not None:
+                _x0_hat = self.predict_start_from_noise(x, time_cond, eps)
+                grad = F.normalize(cond_fn(_x0_hat, time_cond), dim=-1)
+                eps_hat = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
+            else:
+                eps_hat = eps
+
+            # 3) Compute x0_hat
+            x0_hat = self.predict_start_from_noise(x, time_cond, eps_hat)
+
+            # 4) DDIM update
+            if time_next < 0:
+                x = maybe_clip(x0_hat)
+                continue
+
+            time_next_cond = torch.full((batch_size,), time_next, device=device, dtype=torch.long)
+            alpha_bar_next = extract(self.alphas_cumprod, time_next_cond, x.shape)
+
+            x = alpha_bar_next.sqrt() * x0_hat + (1.0 - alpha_bar_next).sqrt() * eps_hat
+            x = maybe_clip(x)
 
         return x
     

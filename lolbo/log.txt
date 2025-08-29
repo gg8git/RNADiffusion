@@ -1,13 +1,14 @@
 changes i made structurally
 1. took out num_tr_resets + related code from diff_bo.py
 2. merged optimize and molecule optimization into diff_bo.py
-3. merged molecule objective and latent space objective into objective.py
+3. merged molecule objective and latent space objective into objective_new.py
+4. changed objective_new.py
 4. merged load_data and mol_utils into guacamol_utils.py
 5. changed SELFIESDataset
 6. changed BaseVAE slightly
 
 
-changes i made to objective.py
+changes i made to objective_new.py
 - path_to_vae_statedict modified
 - self.dim = 256 -> self.dim = 128
 - vae_decode

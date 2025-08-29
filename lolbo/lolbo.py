@@ -6,9 +6,9 @@ from lolbo.turbo import TurboState, update_state, generate_batch
 from lolbo.utils import update_models_end_to_end, update_surr_model
 from model.surrogate_model.ppgpr import GPModelDKL
 
-# import lightning as L
-# from model.GaussianDiffusion import GaussianDiffusion1D
-# from model.UNet1D import KarrasUnet1D
+import lightning as L
+from RNADiffusion.model.GaussianDiffusion_deprecated import GaussianDiffusion1D
+from model.UNet1D import KarrasUnet1D
 
 
 class LOLBOState:
@@ -42,7 +42,7 @@ class LOLBOState:
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
         self.verbose = verbose
 
-        assert acq_func in ["ei", "ts"]
+        assert acq_func in ["ei", "ts", "ddim"]
         if minimize:
             self.train_y = self.train_y * -1
 
@@ -59,7 +59,7 @@ class LOLBOState:
         self.initialize_surrogate_model()
         self.initialize_tr_state()
         self.initialize_xs_to_scores_dict()
-        # self.initialize_diffusion_model()
+        self.initialize_diffusion_model()
 
     def initialize_xs_to_scores_dict(
         self,
@@ -97,46 +97,47 @@ class LOLBOState:
 
         return self
 
-    # def initialize_diffusion_model(self):
-    #     class Wrapper(L.LightningModule):
-    #         def __init__(self):
-    #             super().__init__()
-    #             model = KarrasUnet1D(
-    #                 seq_len=8,
-    #                 dim=64,
-    #                 dim_max=128,
-    #                 channels=16,
-    #                 num_downsamples=3,
-    #                 attn_res=(32, 16, 8),
-    #                 attn_dim_head=32,
-    #             )
+    def initialize_diffusion_model(self):
+        class Wrapper(L.LightningModule):
+            def __init__(self):
+                super().__init__()
+                model = KarrasUnet1D(
+                    seq_len=8,
+                    dim=64,
+                    dim_max=128,
+                    channels=32,
+                    num_downsamples=3,
+                    attn_res=(32, 16, 8),
+                    attn_dim_head=32,
+                )
 
-    #             self.diffusion = GaussianDiffusion1D(
-    #                 model,
-    #                 seq_length=8,
-    #                 timesteps=1000,
-    #                 objective="pred_noise",
-    #             )
+                self.diffusion = GaussianDiffusion1D(
+                    model,
+                    seq_length=8,
+                    timesteps=1000,
+                    objective="pred_noise",
+                )
 
-    #         def forward(self, z):
-    #             z = z.transpose(1,2)
-    #             return self.diffusion(z)
+            def forward(self, z):
+                return self.diffusion(z)
 
-    #         def training_step(self, batch, batch_idx):
-    #             loss = self.forward(batch)
-    #             self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-    #             return loss
+            def training_step(self, batch, batch_idx):
+                batch = batch.reshape(-1,8,32).transpose(1,2)
+                loss = self.forward(batch)
+                self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+                return loss
 
-    #         def configure_optimizers(self):
-    #             return torch.optim.Adam(self.diffusion.parameters(), lr=3e-4)
+            def configure_optimizers(self):
+                return torch.optim.Adam(self.diffusion.parameters(), lr=3e-4)
         
-    #     model = Wrapper()
-        
-    #     ckpt = torch.load("SELFIES_Diffusion/jhqe3fgr/checkpoints/last.ckpt", map_location="cpu")
-    #     model.load_state_dict(ckpt["state_dict"])
-    #     self.diffusion = model.diffusion
+        model = Wrapper()
 
-    #     return self
+        ckpt = torch.load("SELFIES_Diffusion/jj934sg6/checkpoints/last.ckpt", map_location="cpu")
+        model.load_state_dict(ckpt["state_dict"])
+        self.diffusion = model.diffusion
+        self.diffusion.eval().cuda()
+
+        return self
 
     def update_next(self, z_next_, y_next_, x_next_, acquisition=False):
         """Add new points (z_next, y_next, x_next) to train data
@@ -271,7 +272,7 @@ class LOLBOState:
             Y=self.train_y,
             batch_size=self.bsz,
             acqf=self.acq_func,
-            # diffusion=self.diffusion,
+            diffusion=self.diffusion,
         )
         # 2. Evaluate the batch of candidates by calling oracle
         with torch.no_grad():
@@ -281,6 +282,7 @@ class LOLBOState:
             z_next, _ = self.objective.vae_forward(x_next)  # edited zs
             if self.minimize:
                 y_next = y_next * -1
+        print(f"best score: {y_next.max()}")
         # 3. Add new evaluated points to dataset (update_next)
         if len(y_next) != 0:
             y_next = torch.from_numpy(y_next).float()

@@ -30,7 +30,7 @@ from model.UNet1D import KarrasUnet1D
 from model.mol_score_model.conv_classifier import ConvScoreClassifier
 from model.surrogate_model.wrapper import BoTorchDKLModelWrapper
 
-from model.mol_vae_model.wrapper import VAEWrapper
+from RNADiffusion.model.mol_vae_model.VAEFlatWrapper import VAEWrapper
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 

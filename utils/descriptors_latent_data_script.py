@@ -3,7 +3,7 @@ import selfies as sf
 import torch
 import numpy as np
 from pathlib import Path
-from model.mol_vae_model.wrapper import VAEWrapper
+from RNADiffusion.model.mol_vae_model.VAEFlatWrapper import VAEWrapper
 
 # Read the parquet file
 df = pd.read_parquet("data/descriptors/descriptors.parquet")

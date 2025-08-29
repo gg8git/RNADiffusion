@@ -8,7 +8,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMPr
 from lightning.pytorch.loggers import WandbLogger
 
 from RNADiffusion.data.diffusion_datamodule import DiffusionDataModule
-from model.mol_vae_model.wrapper import VAEWrapper
+from RNADiffusion.model.mol_vae_model.VAEFlatWrapper import VAEWrapper
 from model.mol_score_model.conv_predictor import ConvScorePredictor
 from model.mol_score_model.linear_predictor import LinearScorePredictor
 from data.guacamol_utils import smile_to_guacamole_score

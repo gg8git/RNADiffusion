@@ -11,7 +11,7 @@ from torch import nn
 from torch.cuda.amp import autocast
 from tqdm.auto import tqdm
 
-from model.UNet1D import KarrasUnet1D
+from .UNet1D import KarrasUnet1D
 
 ModelPrediction = namedtuple("ModelPrediction", ["pred_noise", "pred_x_start"])
 LMIN = -5.5
@@ -126,9 +126,8 @@ class GaussianDiffusion1D(nn.Module):
         register_buffer("betas", betas)
         register_buffer("alphas_cumprod", alphas_cumprod)
         register_buffer("alphas_cumprod_prev", alphas_cumprod_prev)
-        # register_buffer("sigmas", torch.sqrt((1.0 - self.alphas_cumprod) / self.alphas_cumprod))
-        self.sigmas = (torch.sqrt((1.0 - self.alphas_cumprod) / self.alphas_cumprod)).to(torch.float32)
-
+        register_buffer("sigmas", torch.sqrt((1.0 - self.alphas_cumprod) / self.alphas_cumprod))
+        
         # calculations for diffusion q(x_t | x_{t-1}) and others
 
         register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod))
@@ -217,9 +216,10 @@ class GaussianDiffusion1D(nn.Module):
         self,
         x,
         t,
-        maybe_clip,
         class_labels,
         x_self_cond=None,
+        clip_x_start=False,
+        maybe_clip=None,
         rederive_pred_noise=False,
     ):
         assert (
@@ -227,6 +227,9 @@ class GaussianDiffusion1D(nn.Module):
         ), "class_labels must be provided for model_predictions"
 
         model_output = self.model(x, t, x_self_cond, class_labels=class_labels)
+        maybe_clip = maybe_clip if maybe_clip is not None else (
+            partial(torch.clamp, min=LMIN, max=LMAX) if clip_x_start else identity
+        )
 
         if self.objective == "pred_noise":
             pred_noise = model_output
@@ -387,7 +390,11 @@ class GaussianDiffusion1D(nn.Module):
             alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
             if cond_fn is not None:
                 _x0_hat = self.predict_start_from_noise(x, time_cond, eps)
-                grad = F.normalize(cond_fn(_x0_hat, time_cond), dim=-1)
+                _x0_hat_out = _x0_hat.transpose(1,2).flatten(1)
+            
+                grad_out = F.normalize(cond_fn(_x0_hat_out, time_cond), dim=-1)
+                grad = grad_out.reshape(-1, self.seq_length, self.channels).transpose(1,2)
+            
                 eps = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
             
             # denoised x0 estimate
@@ -460,7 +467,11 @@ class GaussianDiffusion1D(nn.Module):
             alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
             if cond_fn is not None:
                 _x0_hat = self.predict_start_from_noise(x, time_cond, eps)
-                grad = F.normalize(cond_fn(_x0_hat, time_cond), dim=-1)
+                _x0_hat_out = _x0_hat.transpose(1,2).flatten(1)
+            
+                grad_out = F.normalize(cond_fn(_x0_hat_out, time_cond), dim=-1)
+                grad = grad_out.reshape(-1, self.seq_length, self.channels).transpose(1,2)
+            
                 eps = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
             
             x0_hat = self.predict_start_from_noise(x, time_cond, eps)
@@ -500,7 +511,11 @@ class GaussianDiffusion1D(nn.Module):
         alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
         if cond_fn is not None:
             _x0_hat = self.predict_start_from_noise(x, time_cond, eps)
-            grad = F.normalize(cond_fn(_x0_hat, time_cond), dim=-1)
+            _x0_hat_out = _x0_hat.transpose(1,2).flatten(1)
+
+            grad_out = F.normalize(cond_fn(_x0_hat_out, time_cond), dim=-1)
+            grad = grad_out.reshape(-1, self.seq_length, self.channels).transpose(1,2)
+
             eps_hat = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
         else:
             eps_hat = eps

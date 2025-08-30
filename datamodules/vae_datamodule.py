@@ -14,7 +14,7 @@ class VAEDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-        self.vocab = json.load(open("./data/vocab.json", "r"))
+        self.vocab = json.load(open("./data/selfies/vocab.json", "r"))
 
     def train_dataloader(self) -> DataLoader:
         train_data = torch.load(os.path.join(self.data_dir, "train.pt")).long()

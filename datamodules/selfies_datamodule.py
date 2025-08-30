@@ -16,7 +16,7 @@ class SELFIESDataModule(pl.LightningDataModule):
         self,
         batch_size,
         data_root_path,
-        vocab_path="data/selfies_vocab.json",
+        vocab_path="data/selfies/selfies_vocab.json",
     ):
         super().__init__()
 
@@ -58,7 +58,7 @@ class SELFIESDataset(Dataset):
             for string in selfie_strings:
                 self.data.append(list(sf.split_selfies(string)))
 
-        with open("data/selfies_vocab.json") as f:
+        with open("data/selfies/selfies_vocab.json") as f:
             self.vocab2idx = json.load(f)
         self.vocab = self.vocab2idx.keys()
 

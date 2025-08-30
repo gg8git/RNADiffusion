@@ -7,7 +7,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar
 from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
 
-from data.vae_datamodule import VAEDataModule
+from datamodules.vae_datamodule import VAEDataModule
 from model.rna_vae_model.RNAVAE import Config, RNAVAE
 
 # torch.set_float32_matmul_precision("high")

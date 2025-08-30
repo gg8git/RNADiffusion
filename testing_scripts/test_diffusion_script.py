@@ -22,21 +22,19 @@ from botorch.optim import optimize_acqf
 import gpytorch
 from gpytorch.mlls import PredictiveLogLikelihood
 
-from data.guacamol_utils import smiles_to_desired_scores, smile_to_guacamole_score
-from RNADiffusion.data.diffusion_datamodule import DiffusionDataModule, LatentDatasetClassifier, LatentDatasetDescriptors
-from model.surrogate_model.ppgpr import GPModelDKL
-from RNADiffusion.model.GaussianDiffusion_deprecated import GaussianDiffusion1D
-from model.UNet1D import KarrasUnet1D
+from utils.guacamol_utils import smiles_to_desired_scores, smile_to_guacamole_score
+from datamodules.diffusion_datamodule import DiffusionDataModule, LatentDatasetClassifier, LatentDatasetDescriptors
+from model import GPModelDKL, GaussianDiffusion1D, KarrasUnet1D
 from model.mol_score_model.conv_classifier import ConvScoreClassifier
 from model.surrogate_model.wrapper import BoTorchDKLModelWrapper
 
-from RNADiffusion.model.mol_vae_model.VAEFlatWrapper import VAEWrapper
+from RNADiffusion.model.mol_vae_model.FlatWrapper import VAEFlatWrapper
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # === VAE MODEL ===
 
-vae_wrapper = VAEWrapper(path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt")
+vae_wrapper = VAEFlatWrapper(path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt")
 
 
 # === GP methods ===
@@ -61,7 +59,7 @@ def update_surr_model(model, mll, learning_rte, train_z, train_y, n_epochs):
 
 # === Molecule decoding and evaluation ===
 
-with open("data/selfies_vocab.json") as f:
+with open("data/selfies/selfies_vocab.json") as f:
     vocab = json.load(f)
 
 def tokens_to_selfie(tokens, drop_after_stop=True) -> str:

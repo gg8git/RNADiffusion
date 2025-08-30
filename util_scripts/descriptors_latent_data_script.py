@@ -3,7 +3,7 @@ import selfies as sf
 import torch
 import numpy as np
 from pathlib import Path
-from RNADiffusion.model.mol_vae_model.VAEFlatWrapper import VAEWrapper
+from model import VAEFlatWrapper
 
 # Read the parquet file
 df = pd.read_parquet("data/descriptors/descriptors.parquet")
@@ -16,7 +16,7 @@ df.to_parquet("data/descriptors/descriptors.parquet")
 
 # Initialize VAE
 device = torch.device("cuda")
-vae_wrapper = VAEWrapper(path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt")
+vae_wrapper = VAEFlatWrapper(path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt")
 
 # Storage for valid rows
 valid_idx = []

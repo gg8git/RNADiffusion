@@ -17,7 +17,6 @@ class VAEModule(pl.LightningModule):
         self.save_hyperparameters(model.hparams)
         self.model = model
         self.vocab = model.vocab
-        self.device = model.device
 
         self.val_kld = KLCalc()
 
@@ -82,12 +81,11 @@ class VAEModule(pl.LightningModule):
         training = self.training
         self.eval()
 
-        # z = z.reshape(-1, self.model.n_acc, self.model.d_bnk).to(self.device)
-        z = z.to(self.device)
+        z = z.to(self.model.device)
         if hasattr(self, 'decoder_neck'):
             z = self.decoder_neck(z.flatten(1)).reshape(z.shape[0], self.n_bn, self.d_decoder)
 
-        tokens = torch.full((z.shape[0], 1), fill_value=self.model.start_tok, device=self.device, dtype=torch.long)
+        tokens = torch.full((z.shape[0], 1), fill_value=self.model.start_tok, device=self.model.device, dtype=torch.long)
         while True: # Loop until every molecule hits a stop token
             logits = self.model.decode(z, tokens)[:, -1:]
             if argmax:
@@ -141,7 +139,7 @@ class VAEModule(pl.LightningModule):
         # Convert SELFIES to tokens using VAEModule's method
         tokens = []
         for s in selfies:
-            token_tensor = self.selfie_to_tokens(s).to(self.device)
+            token_tensor = self.selfie_to_tokens(s).to(self.model.device)
             tokens.append(token_tensor)
         
         # # Collate tokens
@@ -156,7 +154,7 @@ class VAEModule(pl.LightningModule):
 
     def latent_to_selfies_batch(self, z: torch.Tensor, argmax=True, max_len=256):
         """Convert batch of latent vectors to SELFIES strings"""
-        z = z.to(self.device)
+        z = z.to(self.model.device)
         
         tokens = self.sample(
             z,

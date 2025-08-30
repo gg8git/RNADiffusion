@@ -7,11 +7,11 @@ import torch.nn.functional as F
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMProgressBar, EarlyStopping
 from lightning.pytorch.loggers import WandbLogger
 
-from RNADiffusion.data.diffusion_datamodule import DiffusionDataModule
-from RNADiffusion.model.mol_vae_model.VAEFlatWrapper import VAEWrapper
+from datamodules.diffusion_datamodule import DiffusionDataModule
+from model import VAEFlatWrapper
 from model.mol_score_model.conv_predictor import ConvScorePredictor
 from model.mol_score_model.linear_predictor import LinearScorePredictor
-from data.guacamol_utils import smile_to_guacamole_score
+from utils.guacamol_utils import smile_to_guacamole_score
 
 torch.set_float32_matmul_precision("medium")
 

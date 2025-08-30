@@ -6,8 +6,8 @@ import lightning as L
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from model.mol_vae_model.BaseMolVAE import BaseVAE
-from model.mol_vae_model.MolVAE import VAEModule
+from .BaseMolVAE import BaseVAE
+from .MolVAE import VAEModule
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -34,7 +34,7 @@ class VAEFlatWrapper(L.LightningModule):
             d_enc=256,
             encoder_dim_ff=512,
             encoder_num_layers=3,
-        )
+        ).to(device)
         
         # Load state dict
         state_dict = torch.load(path_to_vae_statedict, map_location=device)["state_dict"]

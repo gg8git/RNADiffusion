@@ -1,7 +1,7 @@
 from botorch.models.gpytorch import GPyTorchModel
 from botorch.posteriors import GPyTorchPosterior
 
-from model.surrogate_model.ppgpr import GPModelDKL
+from .ppgpr import GPModelDKL
 
 class BoTorchDKLModelWrapper(GPyTorchModel):
     def __init__(self, model: GPModelDKL):

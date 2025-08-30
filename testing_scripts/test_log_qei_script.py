@@ -17,12 +17,12 @@ from botorch.optim import optimize_acqf
 import gpytorch
 from gpytorch.mlls import PredictiveLogLikelihood
 
-from RNADiffusion.data.diffusion_datamodule import DiffusionDataModule, LatentDatasetDescriptors
-from model.surrogate_model.ppgpr import GPModelDKL
-from RNADiffusion.model.GaussianDiffusion_deprecated import GaussianDiffusion1D
-from model.UNet1D import KarrasUnet1D
+from datamodules.diffusion_datamodule import DiffusionDataModule, LatentDatasetDescriptors, LatentDataset
+from model import GPModelDKL, GaussianDiffusion1D, KarrasUnet1D, VAEFlatWrapper
+from utils.guacamol_utils import smiles_to_desired_scores
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+vae = VAEFlatWrapper(path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt").to(device)
 
 
 def update_surr_model(model, mll, learning_rte, train_z, train_y, n_epochs):
@@ -98,7 +98,7 @@ def get_cond_fn(log_prob_fn, guidance_strength: float = 1.0, latent_dim: int = 1
     return cond_fn
 
 
-def load_diffusion_model():
+def load_diffusion_model(load_model_checkpoint):
     class Wrapper(L.LightningModule):
         def __init__(self):
             super().__init__()
@@ -118,27 +118,13 @@ def load_diffusion_model():
                 timesteps=1000,
                 objective="pred_noise",
             )
-
-        def forward(self, z):
-            z = z.transpose(1,2)
-            return self.diffusion(z)
-
-        def training_step(self, batch, batch_idx):
-            loss = self.forward(batch)
-            self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-            return loss
-
-        def configure_optimizers(self):
-            return torch.optim.Adam(self.diffusion.parameters(), lr=3e-4)
-    
     model = Wrapper()
     
-    ckpt = torch.load("SELFIES_Diffusion/jhqe3fgr/checkpoints/last.ckpt", map_location="cpu")
+    ckpt = torch.load(load_model_checkpoint, map_location="cpu")
     model.load_state_dict(ckpt["state_dict"])
     diffusion = model.diffusion
     diffusion.eval()
     return diffusion.cuda()
-
 
 
 def score_lambda(function, name, latent_dim, log_qei, max_restarts=5, **kwargs):
@@ -264,21 +250,36 @@ def evaluate_on_batch(batch_size, diffusion_model, cond_fn, log_qei, bounds):
     return curr_summary
 
 
-def validate_with_descriptor_gp(diffusion, batch_sizes=[64], surr_iters=[16]):
+def get_batch(batch, mode="pdop"):
+    if mode == "qed" or mode == "fsp3":
+        batch_z, _, qed, fsp3 = batch
+        flat_batch_z = batch_z.reshape(batch_z.size(0), -1)
+        return flat_batch_z, (qed if mode == "qed" else fsp3)
+    
+    with torch.no_grad():
+        batch_selfies = vae.latent_to_selfies(batch)
+        batch_smiles = [sf.decoder(s) for s in batch_selfies]
+        scores = smiles_to_desired_scores(batch_smiles, mode)
+    batch_y = torch.tensor(scores, device=device, dtype=torch.float32)
+    flat_batch_z = batch.reshape(batch.size(0), -1)
+    return flat_batch_z, batch_y
+
+def validate_with_gp(diffusion, mode="pdop", batch_sizes=[64], surr_iters=[16], log_path=None):
     print("=== Conditional Sampling (GP Condition) ===")
     # Placeholder cond_fn – to be replaced with a proper differentiable cond_fn
 
     data_batch_size = 1024
+    sub_data_dir = "descriptors" if (mode == "qed" or mode == "fsp3") else "selfies/selfies_flat"
+    dataset = LatentDatasetDescriptors if (mode == "qed" or mode == "fsp3") else LatentDataset
     dm = DiffusionDataModule(
-        data_dir="data/descriptors",
+        data_dir=f"data/{sub_data_dir}",
         batch_size=data_batch_size,
         num_workers=0,
-        dataset=LatentDatasetDescriptors,
+        dataset=dataset,
     )
 
-    batch = next(iter(dm.train_dataloader())) # [b,8,16]
-    inducing_z = batch[0].cuda()
-    device = inducing_z.device
+    batch = next(iter(dm.train_dataloader())) # [b,128]
+    inducing_z = batch[0].cuda().to(device)
 
     surrogate_model = GPModelDKL(inducing_z.reshape(data_batch_size, -1), likelihood=gpytorch.likelihoods.GaussianLikelihood().cuda()).cuda()
     surrogate_mll = PredictiveLogLikelihood(surrogate_model.likelihood, surrogate_model, num_data=data_batch_size)
@@ -287,21 +288,17 @@ def validate_with_descriptor_gp(diffusion, batch_sizes=[64], surr_iters=[16]):
     max_score = float('-inf')
     best_z = None
 
-    from collections import defaultdict
-    summary = defaultdict(dict)
+    summary = {}
     for i, batch in enumerate(dm.train_dataloader()):
-        batch_z, _, qed, _ = batch
-        flat_batch_z = batch_z.reshape(batch_z.size(0), -1)
-        surrogate_model = update_surr_model(surrogate_model, surrogate_mll, 0.002, flat_batch_z, qed, 100)
-
-        batch_max_score, batch_max_idx = qed.max(dim=0)
+        batch_z, batch_y = get_batch(batch, mode)
+        surrogate_model = update_surr_model(surrogate_model, surrogate_mll, 0.002, batch_z, batch_y, 100)
+        batch_max_score, batch_max_idx = batch_y.max(dim=0)
         if batch_max_score.item() > max_score:
             max_score = batch_max_score.item()
-            best_z = flat_batch_z[batch_max_idx].detach().clone()
+            best_z = batch_z[batch_max_idx].detach().clone()
 
         if i+1 in surr_iters:
             best_f = torch.tensor(max_score, device=device, dtype=torch.float32)
-            # best_s = vae_wrapper.latent_to_selfies(best_z.reshape(-1, diffusion.seq_length, diffusion.channels))[0]
 
             lb = torch.full_like(best_z, -3)
             ub = torch.full_like(best_z,  3)
@@ -324,14 +321,6 @@ def validate_with_descriptor_gp(diffusion, batch_sizes=[64], surr_iters=[16]):
                 clip_grad=False,
                 latent_dim=(diffusion.seq_length * diffusion.channels),
             )
-
-            def cond_fn_ei_reshaped(x, t):
-                # x = x.reshape(x.shape[0], -1)  # no transpose
-                x = x.transpose(1, 2).reshape(x.shape[0], -1)  # with transpose
-                grad = cond_fn_ei(x, t)
-                # grad = grad.reshape(-1, diffusion.channels, diffusion.seq_length)  # no transpose
-                grad = grad.reshape(-1, diffusion.seq_length, diffusion.channels).transpose(1,2)  # with transpose
-                return grad
             
             for batch_size in batch_sizes:
                 print(f"processing (iter: {i+1}, bsz: {batch_size})")
@@ -339,67 +328,28 @@ def validate_with_descriptor_gp(diffusion, batch_sizes=[64], surr_iters=[16]):
                 summary[f"(iter: {i+1}, bsz: {batch_size})"] = evaluate_on_batch(
                     batch_size=batch_size,
                     diffusion_model=diffusion,
-                    cond_fn=cond_fn_ei_reshaped,
+                    cond_fn=cond_fn_ei,
                     log_qei=log_qEI,
                     bounds=bounds
                 )
 
-                # num_restarts = 0
-                # log_qei_score = "N/A"
-                # while log_qei_score == "N/A" and num_restarts < 5:
-                #     try:
-                #         shape = (batch_size, diffusion.channels, diffusion.seq_length)
-                #         latents = diffusion.ddim_sample_haydn(shape, cond_fn=None, guidance_scale=1.0)
-                #         latents = latents.transpose(1,2)  # with transpose
-                #         log_qei_score = log_qEI(latents.reshape(latents.shape[0], -1)).detach().cpu().item()
-                #     except Exception as e:
-                #         num_restarts += 1
-                # curr_summary['no cond'] = {'log qei score': log_qei_score, 'num restarts': num_restarts}
-                # print(f"log qei no cond: {log_qei_score}")
-                # torch.cuda.empty_cache()
-
-                # num_restarts = 0
-                # log_qei_score = "N/A"
-                # while log_qei_score == "N/A" and num_restarts < 5:
-                #     try:
-                #         shape = (batch_size, diffusion.channels, diffusion.seq_length)
-                #         latents = diffusion.ddim_sample_haydn(shape, cond_fn=cond_fn_ei_reshaped, guidance_scale=25.0)
-                #         latents = latents.transpose(1,2)  # with transpose
-                #         log_qei_score = log_qEI(latents.reshape(latents.shape[0], -1)).detach().cpu().item()
-                #     except Exception as e:
-                #         num_restarts += 1
-                # curr_summary['ddim'] = {'log qei score': log_qei_score, 'num restarts': num_restarts}
-                # print(f"log qei ddim: {log_qei_score}")
-                # torch.cuda.empty_cache()
-
-                # num_restarts = 0
-                # log_qei_score = "N/A"
-                # while log_qei_score == "N/A" and num_restarts < 5:
-                #     try:
-                #         latents, _ = optimize_acqf(log_qEI, bounds=bounds, q=batch_size, num_restarts=10, raw_samples=1024)
-                #         latents = latents.reshape(-1, diffusion.seq_length, diffusion.channels)
-                #         log_qei_score = log_qEI(latents.reshape(latents.shape[0], -1)).detach().cpu().item()
-                #     except Exception as e:
-                #         num_restarts += 1
-                # curr_summary['optimize acqf'] = {'log qei score': log_qei_score, 'num restarts': num_restarts}
-                # print(f"log qei optimize acqf: {log_qei_score}")
-                # torch.cuda.empty_cache()
-
-                with open("./log_big_batch_noacqf.json", 'w') as file:
-                    json.dump(summary, file, indent=2)
+                if log_path is not None:
+                    with open(log_path, 'w') as file:
+                        json.dump(summary, file, indent=2)
         
         if i > max(surr_iters):
             break
     
-    with open("./log_big_batch_noacqf.json", 'w') as file:
-        json.dump(summary, file, indent=2)
+    if log_path is not None:
+        with open(log_path, 'w') as file:
+            json.dump(summary, file, indent=2)
     print(summary)
 
 # === Entry point ===
 
 def main():
-    diffusion = load_diffusion_model()
-    validate_with_descriptor_gp(diffusion=diffusion, batch_sizes=[256, 512, 1024, 2048, 4096], surr_iters = [1, 4, 16, 64, 256])
+    diffusion = load_diffusion_model(load_model_checkpoint="SELFIES_Diffusion/jhqe3fgr/checkpoints/last.ckpt")
+    validate_with_gp(diffusion=diffusion, mode="qed", batch_sizes=[256, 512, 1024, 2048, 4096], surr_iters = [1, 4, 16, 64, 256], log_path=f"results/log_{time.time()}.json")
 
 if __name__ == "__main__":
     main()

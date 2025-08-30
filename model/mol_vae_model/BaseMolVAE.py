@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.distributions import kl_divergence, Normal, Categorical
 from hnn_utils import nn as HNN
 
-from model.mol_vae_model.components import Embedding, causal_mask, TransformerDecoderLayer, TransformerEncoderLayer
+from .components import Embedding, causal_mask, TransformerDecoderLayer, TransformerEncoderLayer
 
 MIN_STD = 1e-4
 

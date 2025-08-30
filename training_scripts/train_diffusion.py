@@ -3,9 +3,8 @@ import torch
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMProgressBar
 from lightning.pytorch.loggers import WandbLogger
 
-from RNADiffusion.data.diffusion_datamodule import DiffusionDataModule
-from RNADiffusion.model.GaussianDiffusion_deprecated import GaussianDiffusion1D
-from model.UNet1D import KarrasUnet1D
+from datamodules import DiffusionDataModule
+from model import GaussianDiffusion1D, KarrasUnet1D
 
 torch.set_float32_matmul_precision("medium")
 
@@ -21,6 +20,7 @@ class Wrapper(L.LightningModule):
             num_downsamples=3,
             attn_res=(32, 16, 8),
             attn_dim_head=32,
+            self_condition=True,
         )
 
         self.diffusion = GaussianDiffusion1D(
@@ -31,13 +31,9 @@ class Wrapper(L.LightningModule):
         )
 
     def forward(self, z):
-        import ipdb; ipdb.set_trace()
         return self.diffusion(z)
 
     def training_step(self, batch, batch_idx):
-        import ipdb; ipdb.set_trace()
-        batch = batch.reshape(-1,8,32).transpose(1,2)
-        import ipdb; ipdb.set_trace()
         loss = self.forward(batch)
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
@@ -50,7 +46,7 @@ def main():
     model = Wrapper()
 
     dm = DiffusionDataModule(
-        data_dir="data/selfies_lolbo",
+        data_dir="data/selfies/selfies_flat",
         batch_size=64,
         num_workers=0,
     )

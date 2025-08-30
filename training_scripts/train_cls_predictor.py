@@ -7,8 +7,8 @@ import torch.nn.functional as F
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMProgressBar, EarlyStopping
 from lightning.pytorch.loggers import WandbLogger
 
-from RNADiffusion.data.diffusion_datamodule import DiffusionDataModule, LatentDatasetClassifier
-from RNADiffusion.model.mol_vae_model.VAEFlatWrapper import VAEWrapper
+from datamodules import DiffusionDataModule, LatentDatasetClassifier
+from RNADiffusion.model.mol_vae_model.FlatWrapper import VAEFlatWrapper
 from model.mol_score_model.conv_classifier import ConvScoreClassifier
 
 torch.set_float32_matmul_precision("medium")

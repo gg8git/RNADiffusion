@@ -44,7 +44,7 @@ def update_surr_model(model, mll, learning_rte, train_z, train_y, n_epochs):
     return model
 
 
-def get_cond_fn(log_prob_fn, guidance_strength: float = 1.0, latent_dim: int = 128, clip_grad=False, clip_grad_max=10.0, debug=False):
+def get_cond_fn(log_prob_fn, guidance_strength: float = 1.0, latent_dim: int = 128, clip_grad=False, clip_grad_max=10.0):
     '''
         log_prob_fn --> maps a latent z of shape (B, 128) into a log probability
         guidance_strength --> the guidance strength of the model
@@ -59,40 +59,14 @@ def get_cond_fn(log_prob_fn, guidance_strength: float = 1.0, latent_dim: int = 1
         mean = mean.detach().reshape(-1, latent_dim)
         mean.requires_grad_(True)
 
-        # if debug:
-            # print(f"mean: {mean}")
-            # print(f"mean.shape: {mean.shape}")
-            # print(f"mean.requires_grad: {mean.requires_grad}")
-
-
-        #---------------------------------------------------------------------------
-
         with torch.enable_grad():
             predicted_log_probability = log_prob_fn(mean)
-            if debug:
-                print(f"pred_log_prob: {predicted_log_probability}")
-                print(f"pred_log_prob.shape: {predicted_log_probability.shape}")
-                print(f"pred_log_prob.requires_grad {predicted_log_probability.requires_grad}")
-                
             gradients = torch.autograd.grad(predicted_log_probability, mean, retain_graph=True)[0]
-
-            # if debug:
-                # print(f"gradients: {gradients}")
-                # print(f"graidents.shape: {gradients.shape}")
-                # print(f"gradients.requires_grad {gradients.requires_grad}")
                 
             if clip_grad:
-                if debug:
-                    print(f"Clipping gradients to {-clip_grad_max} to {clip_grad_max}")
                 gradients = torch.clamp(gradients, -clip_grad_max, clip_grad_max)
                 
             grads = guidance_strength * gradients.reshape(-1, 1, latent_dim)
-            if debug:
-                # print(f"grads: {grads}")
-                print(f"grad_norm: {grads.norm(2)}")
-                print(f"grads.shape: {grads.shape}")
-                # print(f"grads.requires_grad {grads.requires_grad}")
-                
             return grads
         
     return cond_fn
@@ -110,6 +84,7 @@ def load_diffusion_model(load_model_checkpoint):
                 num_downsamples=3,
                 attn_res=(32, 16, 8),
                 attn_dim_head=32,
+                self_condition=True,
             )
 
             self.diffusion = GaussianDiffusion1D(
@@ -158,40 +133,66 @@ def score_lambda(function, name, latent_dim, log_qei, max_restarts=5, **kwargs):
 
 def evaluate_on_batch(batch_size, diffusion_model, cond_fn, log_qei, bounds):
     curr_summary = {}
-    shape = (batch_size, diffusion_model.channels, diffusion_model.seq_length)
     latent_dim = diffusion_model.channels * diffusion_model.seq_length
 
     # no conditioning
     curr_summary['no cond'] = score_lambda(
-        function=diffusion_model.ddim_sample_haydn,
+        function=diffusion_model.ddim_sample,
         name='no cond',
         latent_dim=latent_dim,
         log_qei=log_qei,
         # kwargs
-        shape=shape,
+        batch_size=batch_size,
         cond_fn=None,
         guidance_scale=1.0
     )
 
     curr_summary['ddim cond'] = score_lambda(
-        function=diffusion_model.ddim_sample_haydn,
+        function=diffusion_model.ddim_sample,
         name='ddim cond',
         latent_dim=latent_dim,
         log_qei=log_qei,
         # kwargs
-        shape=shape,
+        batch_size=batch_size,
+        use_self_cond=False,
+        cond_fn=cond_fn,
+        guidance_scale=25.0
+    )
+
+    curr_summary['ddim self cond'] = score_lambda(
+        function=diffusion_model.ddim_sample,
+        name='ddim self cond',
+        latent_dim=latent_dim,
+        log_qei=log_qei,
+        # kwargs
+        batch_size=batch_size,
+        use_self_cond=True,
         cond_fn=cond_fn,
         guidance_scale=25.0
     )
 
     curr_summary['ddim cond 50'] = score_lambda(
-        function=diffusion_model.ddim_sample_haydn,
+        function=diffusion_model.ddim_sample,
         name='ddim cond 50',
         latent_dim=latent_dim,
         log_qei=log_qei,
         # kwargs
-        shape=shape,
+        batch_size=batch_size,
         sampling_timesteps=50,
+        use_self_cond=False,
+        cond_fn=cond_fn,
+        guidance_scale=25.0
+    )
+
+    curr_summary['ddim self cond 50'] = score_lambda(
+        function=diffusion_model.ddim_sample,
+        name='ddim self cond 50',
+        latent_dim=latent_dim,
+        log_qei=log_qei,
+        # kwargs
+        batch_size=batch_size,
+        sampling_timesteps=50,
+        use_self_cond=True,
         cond_fn=cond_fn,
         guidance_scale=25.0
     )
@@ -202,36 +203,36 @@ def evaluate_on_batch(batch_size, diffusion_model, cond_fn, log_qei, bounds):
     #     latent_dim=latent_dim,
     #     log_qei=log_qei,
     #     # kwargs
-    #     shape=shape,
+    #     batch_size=batch_size,
     #     sampling_timesteps=50,
     #     cond_fn=cond_fn,
     #     guidance_scale=25.0
     # )
 
-    curr_summary['dpmpp2msde cond 50'] = score_lambda(
-        function=diffusion_model.dpmpp2msde_sample,
-        name='dpmpp2msde cond 50',
-        latent_dim=latent_dim,
-        log_qei=log_qei,
-        # kwargs
-        shape=shape,
-        sampling_timesteps=50,
-        cond_fn=cond_fn,
-        guidance_scale=25.0
-    )
-
-    # curr_summary['optimize acqf'] = score_lambda(
-    #     function=optimize_acqf,
-    #     name='optimize acqf',
+    # curr_summary['dpmpp2msde cond 50'] = score_lambda(
+    #     function=diffusion_model.dpmpp2msde_sample,
+    #     name='dpmpp2msde cond 50',
     #     latent_dim=latent_dim,
     #     log_qei=log_qei,
     #     # kwargs
-    #     acq_function=log_qei,
-    #     bounds=bounds,
-    #     q=batch_size,
-    #     num_restarts=3,
-    #     raw_samples=1024,
+    #     batch_size=batch_size,
+    #     sampling_timesteps=50,
+    #     cond_fn=cond_fn,
+    #     guidance_scale=25.0
     # )
+
+    curr_summary['optimize acqf'] = score_lambda(
+        function=optimize_acqf,
+        name='optimize acqf',
+        latent_dim=latent_dim,
+        log_qei=log_qei,
+        # kwargs
+        acq_function=log_qei,
+        bounds=bounds,
+        q=batch_size,
+        num_restarts=3,
+        raw_samples=1024,
+    )
 
     # curr_summary['optimize acqf seq'] = score_lambda(
     #     function=optimize_acqf,
@@ -348,8 +349,8 @@ def validate_with_gp(diffusion, mode="pdop", batch_sizes=[64], surr_iters=[16], 
 # === Entry point ===
 
 def main():
-    diffusion = load_diffusion_model(load_model_checkpoint="SELFIES_Diffusion/jhqe3fgr/checkpoints/last.ckpt")
-    validate_with_gp(diffusion=diffusion, mode="qed", batch_sizes=[256, 512, 1024, 2048, 4096], surr_iters = [1, 4, 16, 64, 256], log_path=f"results/log_{time.time()}.json")
+    diffusion = load_diffusion_model(load_model_checkpoint="SELFIES_Diffusion/oflvuzyp/checkpoints/last.ckpt")
+    validate_with_gp(diffusion=diffusion, mode="qed", batch_sizes=[4, 16, 64, 256], surr_iters = [4, 16, 64], log_path=f"results/log_{int(time.time() * 1000)}.json")
 
 if __name__ == "__main__":
     main()

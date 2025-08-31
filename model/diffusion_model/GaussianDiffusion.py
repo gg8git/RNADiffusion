@@ -336,7 +336,7 @@ class GaussianDiffusion1D(nn.Module):
         for t in tqdm(reversed(range(0, self.num_timesteps)), desc = 'DDPM Sampling loop time step', total=self.num_timesteps, leave=False):
             x, _ = self.p_sample(x, t, clip_denoised=clip_denoised)
 
-        return x.tranpose(1,2).flatten(1)
+        return x.transpose(1,2).flatten(1)
 
     @torch.no_grad()
     def dpmpp2m_sample(
@@ -344,17 +344,19 @@ class GaussianDiffusion1D(nn.Module):
         batch_size,
         eta = None,
         sampling_timesteps = None,
-        guidance_scale: float = 1.0,
+        use_self_cond=None,
         clip_denoised=True,
         cond_fn: Callable | None = None,
+        guidance_scale: float = 1.0,
     ) -> torch.Tensor:
 
-        shape, device, total_timesteps, sampling_timesteps, eta = (
+        shape, device, total_timesteps, sampling_timesteps, eta, use_self_cond = (
             (batch_size, self.channels, self.seq_length),
             self.betas.device,
             self.num_timesteps,
             sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
             eta if exists(eta) else self.ddim_sampling_eta,
+            use_self_cond if exists(use_self_cond) else self.self_condition,
         )
 
         maybe_clip = (
@@ -377,14 +379,15 @@ class GaussianDiffusion1D(nn.Module):
         log_sigmas = torch.log(sigmas + 1e-12)
         old_denoised = None
 
-        for i in tqdm(range(len(sigmas) - 1), desc="DPMPP2M Sampling Loop Time Step"):
+        for i in tqdm(range(len(sigmas) - 1), desc="DPMPP2M Sampling Loop Time Step", leave=False):
             sigma_t = sigmas[i]
             sigma_next = sigmas[i + 1]
             t_index = int(timesteps[i]) if i < len(timesteps) else 0
             time_cond = torch.full((batch_size,), t_index, device=device, dtype=torch.long)
+            self_cond = old_denoised if use_self_cond else None
 
             # predict model output noise ε
-            eps = self.model(x, time_cond)
+            eps = self.model(x, time_cond, self_cond, class_labels=None)
 
             # guidance
             alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
@@ -393,7 +396,7 @@ class GaussianDiffusion1D(nn.Module):
                 _x0_hat_out = _x0_hat.transpose(1,2).flatten(1)
             
                 grad_out = F.normalize(cond_fn(_x0_hat_out, time_cond), dim=-1)
-                grad = grad_out.reshape(-1, self.seq_length, self.channels).transpose(1,2)
+                grad = grad_out.reshape(batch_size, self.seq_length, self.channels).transpose(1,2)
             
                 eps = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
             
@@ -418,7 +421,7 @@ class GaussianDiffusion1D(nn.Module):
             old_denoised = denoised
             x = maybe_clip(x)
         
-        return x.tranpose(1,2).flatten(1)
+        return x.transpose(1,2).flatten(1)
 
     @torch.no_grad()
     def dpmpp2msde_sample(
@@ -426,17 +429,19 @@ class GaussianDiffusion1D(nn.Module):
         batch_size,
         eta = None,
         sampling_timesteps = None,
-        guidance_scale: float = 1.0,
+        use_self_cond=None,
         clip_denoised=True,
         cond_fn: Callable | None = None,
+        guidance_scale: float = 1.0,
     ) -> torch.Tensor:
         
-        shape, device, total_timesteps, sampling_timesteps, eta = (
+        shape, device, total_timesteps, sampling_timesteps, eta, use_self_cond = (
             (batch_size, self.channels, self.seq_length),
             self.betas.device,
             self.num_timesteps,
             sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
             eta if exists(eta) else self.ddim_sampling_eta,
+            use_self_cond if exists(use_self_cond) else self.self_condition,
         )
 
         maybe_clip = (
@@ -456,13 +461,14 @@ class GaussianDiffusion1D(nn.Module):
         old_denoised = None
         h_last = None
 
-        for i in tqdm(range(len(sigmas) - 1), desc="DPMPP2MSDE Sampling Loop Time Step"):
+        for i in tqdm(range(len(sigmas) - 1), desc="DPMPP2MSDE Sampling Loop Time Step", leave=False):
             sigma_t = sigmas[i]
             sigma_next = sigmas[i + 1]
             t_index = int(timesteps[i]) if i < len(timesteps) else 0
             time_cond = torch.full((batch_size,), t_index, device=device, dtype=torch.long)
+            self_cond = old_denoised if use_self_cond else None
 
-            eps = self.model(x, time_cond)
+            eps = self.model(x, time_cond, self_cond, class_labels=None)
 
             alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
             if cond_fn is not None:
@@ -470,7 +476,7 @@ class GaussianDiffusion1D(nn.Module):
                 _x0_hat_out = _x0_hat.transpose(1,2).flatten(1)
             
                 grad_out = F.normalize(cond_fn(_x0_hat_out, time_cond), dim=-1)
-                grad = grad_out.reshape(-1, self.seq_length, self.channels).transpose(1,2)
+                grad = grad_out.reshape(batch_size, self.seq_length, self.channels).transpose(1,2)
             
                 eps = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
             
@@ -499,13 +505,14 @@ class GaussianDiffusion1D(nn.Module):
             h_last = h
             x = maybe_clip(x)
 
-        return x.tranpose(1,2).flatten(1)
+        return x.transpose(1,2).flatten(1)
     
-    def ddim_sample_step(self, batch_size, x, x0_hat, time, time_next, device, eta, class_labels, maybe_clip, cond_fn, guidance_scale):
+    def ddim_sample_step(self, batch_size, x, x0_hat, time, time_next, device, eta, use_self_cond, class_labels, maybe_clip, cond_fn, guidance_scale):
         time_cond = torch.full((batch_size,), time, device=device, dtype=torch.long)
+        self_cond = x0_hat if use_self_cond else None
 
         # 1) Predict eps
-        eps = self.model(x, time_cond)
+        eps = self.model(x, time_cond, self_cond, class_labels=class_labels)
 
         # 2) Guidance: eps_hat = eps − sqrt(1 − alpha_bar_t) * del_{x_t} log f(y|x_t)
         alpha_bar_t = extract(self.alphas_cumprod, time_cond, x.shape)
@@ -514,7 +521,7 @@ class GaussianDiffusion1D(nn.Module):
             _x0_hat_out = _x0_hat.transpose(1,2).flatten(1)
 
             grad_out = F.normalize(cond_fn(_x0_hat_out, time_cond), dim=-1)
-            grad = grad_out.reshape(-1, self.seq_length, self.channels).transpose(1,2)
+            grad = grad_out.reshape(batch_size, self.seq_length, self.channels).transpose(1,2)
 
             eps_hat = eps - (1.0 - alpha_bar_t).sqrt() * grad * guidance_scale
         else:
@@ -536,9 +543,9 @@ class GaussianDiffusion1D(nn.Module):
 
         return x, x0_hat
     
-    def ddim_sample_step_deprecated(self, batch_size, img, x_start, time, time_next, device, eta, class_labels, maybe_clip, cond_fn, grad_scale):
+    def ddim_sample_step_deprecated(self, batch_size, img, x_start, time, time_next, device, eta, use_self_cond, class_labels, maybe_clip, cond_fn, guidance_scale):
         time_cond = torch.full((batch_size,), time, device=device, dtype=torch.long)
-        self_cond = x_start if self.self_condition else None
+        self_cond = x_start if use_self_cond else None
 
         alpha = self.alphas_cumprod[time]
         alpha_next = self.alphas_cumprod[time_next]
@@ -548,7 +555,7 @@ class GaussianDiffusion1D(nn.Module):
                 cond_fn, maybe_clip, img, time_cond,
                 class_labels=class_labels,
                 x_self_cond=self_cond,
-                grad_scale=grad_scale,
+                grad_scale=guidance_scale,
             )
         else:
             pred_noise, x_start, *_ = self.model_predictions(
@@ -572,17 +579,18 @@ class GaussianDiffusion1D(nn.Module):
         return img, x_start
 
     @torch.no_grad()
-    def ddim_sample(self, batch_size, eta=None, sampling_timesteps=None, class_labels=None, clip_denoised=True, cond_fn=None, grad_scale=1.0):
+    def ddim_sample(self, batch_size, eta=None, sampling_timesteps=None, use_self_cond=None, class_labels=None, clip_denoised=True, cond_fn=None, guidance_scale=1.0):
         assert (
             class_labels is not None or not self.model.needs_class_labels
         ), "class_labels must be provided for ddim_sample"
 
-        shape, device, total_timesteps, sampling_timesteps, eta = (
+        shape, device, total_timesteps, sampling_timesteps, eta, use_self_cond = (
             (batch_size, self.channels, self.seq_length),
             self.betas.device,
             self.num_timesteps,
             sampling_timesteps if exists(sampling_timesteps) else self.sampling_timesteps,
             eta if exists(eta) else self.ddim_sampling_eta,
+            use_self_cond if exists(use_self_cond) else self.self_condition,
         )
 
         maybe_clip = (
@@ -604,9 +612,9 @@ class GaussianDiffusion1D(nn.Module):
         for time, time_next in tqdm(
             time_pairs, desc='DDIM Sampling loop time step', leave=False
         ):
-            img, x_start = self.ddim_sample_step(batch_size, img, x_start, time, time_next, device, eta, class_labels, maybe_clip, cond_fn, grad_scale)
+            img, x_start = self.ddim_sample_step(batch_size, img, x_start, time, time_next, device, eta, use_self_cond, class_labels, maybe_clip, cond_fn, guidance_scale)
 
-        return img.tranpose(1,2).flatten(1)
+        return img.transpose(1,2).flatten(1)
     
     @torch.no_grad()
     def sample(self, batch_size, class_labels: torch.Tensor = None):
@@ -618,7 +626,7 @@ class GaussianDiffusion1D(nn.Module):
             batch_size, class_labels=class_labels
         )
 
-    @autocast(enabled=False)
+    # @autocast(enabled=False)
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
 
@@ -678,7 +686,7 @@ class GaussianDiffusion1D(nn.Module):
         return loss.mean()
 
     def forward(self, img, class_labels=None):
-        img = img.reshape(-1, self.seq_length, self.channels).transpose(1,2)
+        img = img.reshape(img.shape[0], self.seq_length, self.channels).transpose(1,2)
 
         (
             b,
@@ -689,6 +697,7 @@ class GaussianDiffusion1D(nn.Module):
         ) = *img.shape, img.device, self.seq_length
 
         assert n == seq_length, f"seq length must be {seq_length}"
+        assert _c == self.channels, f"channels must be {self.channels}"
         assert (
             class_labels is not None or not self.model.needs_class_labels
         ), "class_labels must be provided"

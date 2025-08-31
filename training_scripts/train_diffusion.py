@@ -16,7 +16,7 @@ class Wrapper(L.LightningModule):
             seq_len=8,
             dim=64,
             dim_max=128,
-            channels=32,
+            channels=16,
             num_downsamples=3,
             attn_res=(32, 16, 8),
             attn_dim_head=32,

@@ -167,3 +167,6 @@ checkpoints/*.ckpt
 results
 log*
 checkpoints
+.vscode
+uv.lock
+DiffuseOpt

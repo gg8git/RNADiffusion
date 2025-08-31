@@ -618,7 +618,7 @@ class GaussianDiffusion1D(nn.Module):
             batch_size, class_labels=class_labels
         )
 
-    @autocast(enabled=False)
+    # @autocast(enabled=False)
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
 

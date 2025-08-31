@@ -37,6 +37,7 @@ class DiffusionDataModule(L.LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=lambda x: x,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -47,6 +48,7 @@ class DiffusionDataModule(L.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=lambda x: x,
         )
 
     def test_dataloader(self) -> DataLoader:
@@ -57,6 +59,7 @@ class DiffusionDataModule(L.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=lambda x: x,
         )
 
 
@@ -80,4 +83,4 @@ class LatentDataset(Dataset):
         mus = rows["mu"]
         sigmas = rows["sigma"]
         zs = mus + sigmas * torch.randn_like(mus)
-        return (zs,)
+        return zs

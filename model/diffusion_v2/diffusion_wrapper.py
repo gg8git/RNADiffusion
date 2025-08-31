@@ -104,8 +104,9 @@ class DiffusionModel(L.LightningModule):
             if cond_fn is not None and t <= 900:
                 _x0_hat = A * x_t - B * v_hat
 
-                grad = cond_fn(_x0_hat, t_vec)
-                grad = clip_max_grad(grad, 6 * math.sqrt(self.n_bn * self.d_bn)) # Keep gradient in [-6, 6] ball
+                grad = cond_fn(_x0_hat.transpose(1, 2).flatten(1), t_vec)
+                grad = grad.reshape(_x0_hat.shape[0], self.n_bn, self.d_bn).transpose(1, 2)
+                grad = clip_max_grad(grad, 6 * math.sqrt(self.n_bn * self.d_bn))  # Keep gradient in [-6, 6] ball
 
                 v_hat = v_hat - B * grad * guidance_scale
 
@@ -124,6 +125,7 @@ class DiffusionModel(L.LightningModule):
             x_start = x0_hat
 
         return x_t.transpose(1, 2).flatten(1)
+
 
 def clip_max_grad(x: Tensor, max_norm: float) -> Tensor:
     shape = x.shape

@@ -31,10 +31,16 @@ def try_canon(smi: str):
         return None
 
 
-def cond_fn_mvn(x: Tensor, t: Tensor) -> Tensor:
-    dist = Normal(MU, STD)
-    grad_fn = grad(lambda x: dist.log_prob(x).sum())
-    return vmap(grad_fn, in_dims=(0,))(x)
+def cond_fn_mvn(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    with torch.enable_grad():
+        x = x.detach().requires_grad_(True)
+        dist = Normal(MU, STD)
+        logp = dist.log_prob(x)
+        if logp.dim() > 1:
+            logp = logp.sum(dim=tuple(range(1, logp.dim())))
+        s = logp.sum()
+        (grad_x,) = torch.autograd.grad(s, x, retain_graph=False, create_graph=False)
+    return grad_x.detach()
 
 
 z = model.ddim_sample(
@@ -89,14 +95,16 @@ predictor.cuda()
 predictor.freeze()
 
 
-def cond_fn_extinct(z: Tensor, *args, **kwargs) -> Tensor:
-    def predict(z: Tensor):
-        logits = predictor(z.view(1, -1))
-        return F.logsigmoid(logits).squeeze()
-
-    grad_fn = grad(predict)
-    return vmap(grad_fn, in_dims=(0,))(z)
-
+def cond_fn_extinct(z: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    with torch.enable_grad():
+        z = z.detach().requires_grad_(True)
+        logits = predictor(z.view(z.shape[0], -1)) 
+        logp = F.logsigmoid(logits)
+        if logp.dim() > 1:
+            logp = logp.sum(dim=tuple(range(1, logp.dim())))
+        s = logp.sum()
+        (grad_z,) = torch.autograd.grad(s, z, retain_graph=False, create_graph=False)
+    return grad_z.detach()
 
 ddim_z = model.ddim_sample(
     batch_size=1024,

@@ -3,6 +3,8 @@ from collections.abc import Callable
 
 import lightning as L
 import torch
+import torch.nn.functional as F
+from einops import reduce
 from torch import Tensor
 from tqdm.auto import tqdm
 
@@ -28,9 +30,11 @@ class DiffusionModel(L.LightningModule):
         self.d_bn = self.vae.d_bnk
 
         model = Unet1D(
-            channels=self.d_bn,
-            dim=64,
-            self_condition=True,
+            in_dim=self.d_bn,
+            hdim=256,
+            dim_ff=2048,
+            num_layers=8,
+            ntime=1000,
         )
 
         self.diffusion = GaussianDiffusion1D(
@@ -40,17 +44,57 @@ class DiffusionModel(L.LightningModule):
             objective=pred_type,
         )
 
+    @torch.compile
+    def _train_forward(self, seq: Tensor) -> Tensor:
+        x_start = seq.reshape(seq.shape[0], self.n_bn, self.d_bn)
+
+        B, N, _ = x_start.shape
+
+        t = torch.randint(0, self.diffusion.num_timesteps, (B,), device=self.device).long()
+
+        noise = torch.randn_like(x_start)
+
+        # noise sample
+
+        x = self.diffusion.q_sample(x_start=x_start, t=t, noise=noise)
+
+        with torch.no_grad():
+            x_self_cond = self.diffusion.model_predictions(x, t, clip_x_start=False)[1]
+
+        mask = torch.randn_like(t, dtype=torch.float32) < 0.5
+        x_self_cond = x_self_cond * mask[:, None, None]
+
+        # predict and take gradient step
+
+        model_out = self.diffusion.model(x, t, x_self_cond)
+
+        if self.diffusion.objective == "pred_noise":
+            target = noise
+        elif self.diffusion.objective == "pred_x0":
+            target = x_start
+        elif self.diffusion.objective == "pred_v":
+            v = self.diffusion.predict_v(x_start, t, noise)
+            target = v
+        else:
+            raise ValueError(f"unknown objective {self.objective}")
+
+        loss = F.mse_loss(model_out, target, reduction="none")
+        loss = reduce(loss, "b ... -> b", "mean")
+
+        loss = loss * extract(self.diffusion.loss_weight, t, loss.shape)
+        return loss.mean()
+
     def forward(self, z: Tensor) -> Tensor:
-        z = z.reshape(z.shape[0], self.n_bn, self.d_bn).transpose(-2, -1)
+        z = z.reshape(z.shape[0], self.n_bn, self.d_bn)
         return self.diffusion(z)
 
     def training_step(self, batch: Tensor, batch_idx: int) -> Tensor:
-        loss = self.forward(batch)
+        loss = self._train_forward(batch)
         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch: Tensor, batch_idx: int) -> Tensor:
-        loss = self.forward(batch)
+        loss = self._train_forward(batch)
         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
@@ -85,27 +129,28 @@ class DiffusionModel(L.LightningModule):
         times = list(reversed(times.long().tolist()))
         time_pairs = list(zip(times[:-1], times[1:]))
 
-        x_t = torch.randn((batch_size, self.d_bn, self.n_bn), device=device)
+        x_t = torch.randn((batch_size, self.n_bn, self.d_bn), device=device)
         x_start = None
         for t, t_next in tqdm(time_pairs, desc="DDIM Sampling", leave=False):
             t_vec = torch.full((batch_size,), t, device=device, dtype=torch.long)
 
             # 1) predict v_t
-            v_hat = self.diffusion.model(
-                x=x_t,
-                time=t_vec,
-                x_self_cond=x_start if self.diffusion.self_condition else None,
-            )
+            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                v_hat = self.diffusion.model(
+                    x=x_t,
+                    time=t_vec,
+                    x_self_cond=x_start if self.diffusion.self_condition else None,
+                ).float()
 
             alpha_bar_t = extract(self.diffusion.alphas_cumprod, t_vec, x_t.shape)
             A = alpha_bar_t.sqrt()
             B = (1.0 - alpha_bar_t).sqrt()
 
-            if cond_fn is not None and t <= 900:
+            if cond_fn is not None:
                 _x0_hat = A * x_t - B * v_hat
 
-                grad = cond_fn(_x0_hat.transpose(1, 2).flatten(1), t_vec)
-                grad = grad.reshape(_x0_hat.shape[0], self.n_bn, self.d_bn).transpose(1, 2)
+                grad = cond_fn(_x0_hat.flatten(1), t_vec)
+                grad = grad.reshape(x_t.shape)
                 grad = clip_max_grad(grad, 6 * math.sqrt(self.n_bn * self.d_bn))  # Keep gradient in [-6, 6] ball
 
                 v_hat = v_hat - B * grad * guidance_scale
@@ -124,7 +169,7 @@ class DiffusionModel(L.LightningModule):
             x_t = alpha_bar_next.sqrt() * x0_hat + (1.0 - alpha_bar_next).sqrt() * eps_hat
             x_start = x0_hat
 
-        return x_t.transpose(1, 2).flatten(1)
+        return x_t.flatten(1)
 
 
 def clip_max_grad(x: Tensor, max_norm: float) -> Tensor:
@@ -136,3 +181,9 @@ def clip_max_grad(x: Tensor, max_norm: float) -> Tensor:
 
     x = x * factor
     return x.reshape(shape)
+
+
+def calc_minmax(x: Tensor) -> tuple[float, float]:
+    x_min = x.min().item()
+    x_max = x.max().item()
+    return x_min, x_max

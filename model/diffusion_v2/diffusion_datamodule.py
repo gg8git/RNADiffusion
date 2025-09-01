@@ -14,6 +14,7 @@ class DiffusionDataModule(L.LightningDataModule):
         data_type: DataType,
         batch_size: int,
         num_workers: int,
+        return_extinct: bool = False,
     ) -> None:
         super().__init__()
 
@@ -29,8 +30,13 @@ class DiffusionDataModule(L.LightningDataModule):
             }  # type: ignore
         )
 
+        if return_extinct:
+            assert data_type == "peptide", "Extinct labels can only be returned for peptide data."
+
+        self.return_extinct = return_extinct
+
     def train_dataloader(self) -> DataLoader:
-        train_data = LatentDataset(self.dataset["train"])
+        train_data = LatentDataset(self.dataset["train"], self.return_extinct)
         return DataLoader(
             train_data,
             batch_size=self.batch_size,
@@ -41,7 +47,7 @@ class DiffusionDataModule(L.LightningDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:
-        val_data = LatentDataset(self.dataset["val"])
+        val_data = LatentDataset(self.dataset["val"], self.return_extinct)
         return DataLoader(
             val_data,
             batch_size=self.batch_size,
@@ -52,7 +58,7 @@ class DiffusionDataModule(L.LightningDataModule):
         )
 
     def test_dataloader(self) -> DataLoader:
-        test_data = LatentDataset(self.dataset["test"])
+        test_data = LatentDataset(self.dataset["test"], self.return_extinct)
         return DataLoader(
             test_data,
             batch_size=self.batch_size,
@@ -64,9 +70,10 @@ class DiffusionDataModule(L.LightningDataModule):
 
 
 class LatentDataset(Dataset):
-    def __init__(self, data: datasets.Dataset) -> None:
+    def __init__(self, data: datasets.Dataset, return_extinct: bool = False) -> None:
         self.data = data
-        self.data.set_format("torch", columns=["mu", "sigma"])
+        self.data.set_format("torch", columns=["mu", "sigma"] + (["extinct"] if return_extinct else []))
+        self.return_extinct = return_extinct
 
     def __len__(self) -> int:
         return len(self.data)
@@ -83,4 +90,9 @@ class LatentDataset(Dataset):
         mus = rows["mu"]
         sigmas = rows["sigma"]
         zs = mus + sigmas * torch.randn_like(mus)
+
+        if self.return_extinct:
+            extinctions = rows["extinct"]
+            return zs, extinctions
+
         return zs

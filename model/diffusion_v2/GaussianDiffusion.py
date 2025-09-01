@@ -1,5 +1,4 @@
 import math
-from collections import namedtuple
 from collections.abc import Callable
 from functools import partial
 from random import random
@@ -13,138 +12,18 @@ from torch import Tensor, nn
 from torch.nn import Module, ModuleList
 from tqdm.auto import tqdm
 
+T = TypeVar("T")
+
 LMIN = -10
 LMAX = 10
 
 PredType = Literal["pred_noise", "pred_x0", "pred_v"]
 
 
-class Unet1D(Module):
-    def __init__(
-        self,
-        channels: int,
-        dim: int,
-        dim_mults: tuple[int, ...] = (1, 2, 4, 8),
-        self_condition: bool = False,
-        attn_dim_head: int = 32,
-        attn_heads: int = 4,
-    ):
-        super().__init__()
-
-        # determine dimensions
-
-        self.channels = channels
-        self.self_condition = self_condition
-        input_channels = channels * (2 if self_condition else 1)
-
-        self.init_conv = nn.Conv1d(input_channels, dim, 7, padding=3)
-
-        dims = [dim, *map(lambda m: dim * m, dim_mults)]
-        in_out = list(zip(dims[:-1], dims[1:]))
-
-        # time embeddings
-
-        time_dim = dim * 4
-
-        sinu_pos_emb = SinusoidalPosEmb(dim)
-        fourier_dim = dim
-
-        self.time_mlp = nn.Sequential(
-            sinu_pos_emb, nn.Linear(fourier_dim, time_dim), nn.GELU(), nn.Linear(time_dim, time_dim)
-        )
-
-        resnet_block = partial(ResnetBlock, time_emb_dim=time_dim)
-
-        # layers
-
-        self.downs = ModuleList([])
-        self.ups = ModuleList([])
-        num_resolutions = len(in_out)
-
-        for ind, (dim_in, dim_out) in enumerate(in_out):
-            is_last = ind >= (num_resolutions - 1)
-
-            self.downs.append(
-                ModuleList(
-                    [
-                        resnet_block(dim_in, dim_in),
-                        resnet_block(dim_in, dim_in),
-                        Residual(PreNorm(dim_in, LinearAttention(dim_in))),
-                        Downsample(dim_in, dim_out) if not is_last else nn.Conv1d(dim_in, dim_out, 3, padding=1),
-                    ]
-                )
-            )
-
-        mid_dim = dims[-1]
-        self.mid_block1 = resnet_block(mid_dim, mid_dim)
-        self.mid_attn = Residual(PreNorm(mid_dim, Attention(mid_dim, dim_head=attn_dim_head, heads=attn_heads)))
-        self.mid_block2 = resnet_block(mid_dim, mid_dim)
-
-        for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
-            is_last = ind == (len(in_out) - 1)
-
-            self.ups.append(
-                ModuleList(
-                    [
-                        resnet_block(dim_out + dim_in, dim_out),
-                        resnet_block(dim_out + dim_in, dim_out),
-                        Residual(PreNorm(dim_out, LinearAttention(dim_out))),
-                        Upsample(dim_out, dim_in) if not is_last else nn.Conv1d(dim_out, dim_in, 3, padding=1),
-                    ]
-                )
-            )
-
-        self.out_dim = channels
-
-        self.final_res_block = resnet_block(dim * 2, dim)
-        self.final_conv = nn.Conv1d(dim, self.out_dim, 1)
-
-    def forward(self, x: Tensor, time: Tensor, x_self_cond: Tensor | None = None):
-        if self.self_condition:
-            x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
-            x = torch.cat((x_self_cond, x), dim=1)
-
-        x = self.init_conv(x)
-        r = x.clone()
-
-        t = self.time_mlp(time)
-
-        h = []
-
-        for block1, block2, attn, downsample in self.downs:  # type: ignore
-            x = block1(x, t)
-            h.append(x)
-
-            x = block2(x, t)
-            x = attn(x)
-            h.append(x)
-
-            x = downsample(x)
-
-        x = self.mid_block1(x, t)
-        x = self.mid_attn(x)
-        x = self.mid_block2(x, t)
-
-        for block1, block2, attn, upsample in self.ups:  # type: ignore
-            x = torch.cat((x, h.pop()), dim=1)
-            x = block1(x, t)
-
-            x = torch.cat((x, h.pop()), dim=1)
-            x = block2(x, t)
-            x = attn(x)
-
-            x = upsample(x)
-
-        x = torch.cat((x, r), dim=1)
-
-        x = self.final_res_block(x, t)
-        return self.final_conv(x)
-
-
 class GaussianDiffusion1D(L.LightningModule):
     def __init__(
         self,
-        model: Unet1D,
+        model: nn.Module,
         *,
         seq_length: int,
         timesteps: int = 1000,
@@ -346,7 +225,8 @@ class GaussianDiffusion1D(L.LightningModule):
 
         x_self_cond = None
         if self.self_condition and random() < 0.5:
-            x_self_cond = self.model_predictions(x, t, clip_x_start=True)[1]
+            clip_x_start = not self.training
+            x_self_cond = self.model_predictions(x, t, clip_x_start=clip_x_start)[1]
             x_self_cond.detach_()
 
         # predict and take gradient step
@@ -370,168 +250,12 @@ class GaussianDiffusion1D(L.LightningModule):
         return loss.mean()
 
     def forward(self, seq: Tensor) -> Tensor:
-        B, _, N = seq.shape
+        B, N, _ = seq.shape
         assert self.seq_length == N, f"seq length must be {self.seq_length}"
 
         t = torch.randint(0, self.num_timesteps, (B,), device=self.device).long()
 
         return self.p_losses(seq, t)
-
-
-class Residual(Module):
-    def __init__(self, fn: nn.Module):
-        super().__init__()
-        self.fn = fn
-
-    def forward(self, x: Tensor, *args, **kwargs):
-        return self.fn(x, *args, **kwargs) + x
-
-
-def Upsample(dim: int, dim_out: int | None = None):
-    return nn.Sequential(
-        nn.Upsample(scale_factor=2, mode="nearest"), nn.Conv1d(dim, default(dim_out, dim), 3, padding=1)
-    )
-
-
-def Downsample(dim: int, dim_out: int | None = None):
-    return nn.Conv1d(dim, default(dim_out, dim), 4, 2, 1)
-
-
-class RMSNorm(Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.g = nn.Parameter(torch.ones(1, dim, 1))
-
-    def forward(self, x: Tensor):
-        return F.normalize(x, dim=1) * self.g * (x.shape[1] ** 0.5)
-
-
-class PreNorm(Module):
-    def __init__(self, dim: int, fn: nn.Module):
-        super().__init__()
-        self.fn = fn
-        self.norm = RMSNorm(dim)
-
-    def forward(self, x: Tensor):
-        x = self.norm(x)
-        return self.fn(x)
-
-
-# sinusoidal positional embeds
-
-
-class SinusoidalPosEmb(Module):
-    def __init__(self, dim: int, theta: float = 10000):
-        super().__init__()
-        self.dim = dim
-        self.theta = theta
-
-    def forward(self, x: Tensor):
-        device = x.device
-        half_dim = self.dim // 2
-        emb = math.log(self.theta) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
-        emb = x[:, None] * emb[None, :]
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
-
-
-class Block(Module):
-    def __init__(self, dim: int, dim_out: int):
-        super().__init__()
-        self.proj = nn.Conv1d(dim, dim_out, 3, padding=1)
-        self.norm = RMSNorm(dim_out)
-        self.act = nn.SiLU()
-
-    def forward(self, x: Tensor, scale_shift: tuple[Tensor, Tensor] | None = None):
-        x = self.proj(x)
-        x = self.norm(x)
-
-        if scale_shift is not None:
-            scale, shift = scale_shift
-            x = x * (scale + 1) + shift
-
-        x = self.act(x)
-        return x
-
-
-class ResnetBlock(Module):
-    def __init__(self, dim: int, dim_out: int, *, time_emb_dim: int | None = None):
-        super().__init__()
-        self.mlp = nn.Sequential(nn.SiLU(), nn.Linear(time_emb_dim, dim_out * 2)) if time_emb_dim is not None else None
-
-        self.block1 = Block(dim, dim_out)
-        self.block2 = Block(dim_out, dim_out)
-        self.res_conv = nn.Conv1d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
-
-    def forward(self, x: Tensor, time_emb: Tensor | None = None):
-        scale_shift = None
-        if self.mlp is not None and time_emb is not None:
-            time_emb = self.mlp(time_emb)
-            time_emb = rearrange(time_emb, "b c -> b c 1")
-            scale_shift = time_emb.chunk(2, dim=1)  # type: ignore
-
-        h = self.block1(x, scale_shift=scale_shift)
-
-        h = self.block2(h)
-
-        return h + self.res_conv(x)
-
-
-class LinearAttention(Module):
-    def __init__(self, dim: int, heads: int = 4, dim_head: int = 32):
-        super().__init__()
-        self.scale = dim_head**-0.5
-        self.heads = heads
-        hidden_dim = dim_head * heads
-        self.to_qkv = nn.Conv1d(dim, hidden_dim * 3, 1, bias=False)
-
-        self.to_out = nn.Sequential(nn.Conv1d(hidden_dim, dim, 1), RMSNorm(dim))
-
-    def forward(self, x: Tensor):
-        b, c, n = x.shape
-        qkv = self.to_qkv(x).chunk(3, dim=1)
-        q, k, v = map(lambda t: rearrange(t, "b (h c) n -> b h c n", h=self.heads), qkv)
-
-        q = q.softmax(dim=-2)
-        k = k.softmax(dim=-1)
-
-        q = q * self.scale
-
-        context = torch.einsum("b h d n, b h e n -> b h d e", k, v)
-
-        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
-        out = rearrange(out, "b h c n -> b (h c) n", h=self.heads)
-        return self.to_out(out)
-
-
-class Attention(Module):
-    def __init__(self, dim: int, heads: int = 4, dim_head: int = 32):
-        super().__init__()
-        self.scale = dim_head**-0.5
-        self.heads = heads
-        hidden_dim = dim_head * heads
-
-        self.to_qkv = nn.Conv1d(dim, hidden_dim * 3, 1, bias=False)
-        self.to_out = nn.Conv1d(hidden_dim, dim, 1)
-
-    def forward(self, x: Tensor):
-        q, k, v = self.to_qkv(x).chunk(3, dim=1)
-        q = rearrange(q, "b (h d) n -> b h n d", h=self.heads).contiguous()
-        k = rearrange(k, "b (h d) n -> b h n d", h=self.heads).contiguous()
-        v = rearrange(v, "b (h d) n -> b h n d", h=self.heads).contiguous()
-
-        out = F.scaled_dot_product_attention(q, k, v)
-        out = rearrange(out, "b h n d -> b (h d) n")
-        return self.to_out(out)
-
-
-T = TypeVar("T")
-ModelPrediction = namedtuple("ModelPrediction", ["pred_noise", "pred_x_start"])
-
-
-def exists(x: object | None) -> bool:
-    return x is not None
 
 
 def default(val: T | None, d: T | Callable[[], T]) -> T:
@@ -572,3 +296,267 @@ def cosine_beta_schedule(timesteps: int, s: float = 0.008):
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return torch.clip(betas, 0, 0.999)
+
+
+class Unet1D(Module):
+    def __init__(self, in_dim: int, hdim: int, dim_ff: int, num_layers: int, ntime: int):
+        super().__init__()
+
+        self.in_proj = nn.Sequential(
+            nn.Linear(in_dim * 2, hdim),
+            nn.LayerNorm(hdim),
+        )
+        self.out_proj = nn.Sequential(
+            nn.LayerNorm(hdim),
+            nn.Linear(hdim, in_dim),
+        )
+
+        self.time_emb = nn.Sequential(
+            PositionalEncoding(
+                d_model=hdim,
+                max_len=ntime,
+            ),
+            nn.Linear(hdim, hdim * 4),
+            nn.SiLU(),
+            nn.Linear(hdim * 4, hdim),
+        )
+
+        self.blocks = ModuleList([Block(hdim, dim_ff) for _ in range(num_layers)])
+
+        self.channels = in_dim
+        self.self_condition = True
+
+    @torch.compile
+    def forward(self, x: Tensor, time: Tensor, x_self_cond: Tensor | None = None):
+        if x_self_cond is None:
+            x_self_cond = torch.zeros_like(x)
+
+        x = torch.cat([x, x_self_cond], dim=-1)
+        x = self.in_proj(x)
+
+        time_emb = self.time_emb(time)
+
+        for block in self.blocks:
+            x = block(x, time_emb)
+
+        x = self.out_proj(x)
+
+        return x
+
+
+class Block(Module):
+    def __init__(self, dim: int, dim_ff: int):
+        super().__init__()
+
+        self.transformer = TransformerEncoderLayer(
+            d_model=dim,
+            dim_feedforward=dim_ff,
+            nhead=8,
+        )
+
+        self.time_proj = nn.Sequential(
+            nn.Linear(dim, dim * 4),
+            nn.SiLU(),
+            nn.Linear(dim * 4, 2 * dim),
+        )
+
+    def forward(self, x: Tensor, time_emb: Tensor):
+        x = self.transformer(x)
+
+        scale, shift = self.time_proj(time_emb).chunk(2, dim=-1)
+        x = x * (scale + 1) + shift
+
+        return x
+
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+    ) -> None:
+        super().__init__()
+
+        self.self_attn = SelfAttention(d_model, nhead)
+
+        self.ff_block = FFNSwiGLU(d_model, dim_feedforward)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = x + self._sa_block(self.norm1(x))
+        x = x + self.ff_block(self.norm2(x))
+
+        return x
+
+    def _sa_block(self, x: Tensor) -> Tensor:
+        return self.self_attn(x)
+
+
+class SelfAttention(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        heads: int,
+    ):
+        super().__init__()
+
+        self.embed_size = embed_dim
+        self.num_heads = heads
+        self.head_dim = embed_dim // heads
+
+        assert self.head_dim * heads == embed_dim, "Embedding size needs to be divisible by heads"
+
+        self.qkv_proj = nn.Linear(self.embed_size, self.embed_size * 3)
+
+        self.out_proj = nn.Linear(heads * self.head_dim, embed_dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        q, k, v = self.qkv_proj(x).chunk(3, dim=-1)
+
+        q = rearrange(q, "... n (h d) -> ... h n d", h=self.num_heads)
+        k = rearrange(k, "... n (h d) -> ... h n d", h=self.num_heads)
+        v = rearrange(v, "... n (h d) -> ... h n d", h=self.num_heads)
+
+        attn = F.scaled_dot_product_attention(q, k, v)
+
+        attn = rearrange(attn, "... h n d -> ... n (h d)")
+        return self.out_proj(attn)
+
+
+class FFNSwiGLU(nn.Module):
+    """
+    GLU Variants Improve Transformer
+    https://arxiv.org/abs/2002.05202
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        dim_feedforward: int,
+        out_dim: int | None = None,
+        use_bias: bool = True,
+    ):
+        super().__init__()
+
+        out_dim = out_dim or dim
+
+        self.ff1 = nn.Linear(dim, dim_feedforward * 2, bias=use_bias)
+        self.ff2 = nn.Linear(dim_feedforward, out_dim, bias=use_bias)
+
+    def forward(self, x: Tensor) -> Tensor:
+        y, gate = self.ff1(x).chunk(2, dim=-1)
+        x = y * F.silu(gate)
+        return self.ff2(x)
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 128):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+
+        self.pe = nn.Buffer(pe)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.pe[x]
+
+
+class ExtinctPredictor(L.LightningModule):
+    def __init__(
+        self,
+        hdim: int,
+        n_bn: int = 8,
+        d_bn: int = 32,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.save_hyperparameters()
+
+        self.trunk = nn.Sequential(
+            nn.Unflatten(dim=-1, unflattened_size=(n_bn, d_bn)),
+            nn.Linear(d_bn, hdim),
+            nn.GELU(),
+            nn.Linear(hdim, hdim),
+            nn.GELU(),
+            nn.Linear(hdim, hdim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hdim, d_bn),
+            nn.GELU(),
+            nn.Flatten(1),
+        )
+
+        self.head = nn.Sequential(
+            nn.Linear(n_bn * d_bn, hdim // 2),
+            nn.GELU(),
+            nn.Linear(hdim // 2, hdim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hdim // 2, 1),
+        )
+
+    # @torch.compile
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.trunk(x.flatten(1))
+        x = self.head(x)
+        return x
+
+    def training_step(self, batch: tuple[Tensor, Tensor], batch_idx: int) -> Tensor:
+        seq, extinct = batch
+        extinct_hat = self(seq)
+
+        bce = F.binary_cross_entropy_with_logits(extinct_hat.flatten(), extinct.float().flatten())
+
+        metrics = calc_acc(extinct_hat, extinct)
+        metrics = {f"train/{k}": v for k, v in metrics.items()}
+
+        self.log("train/bce", bce, prog_bar=True, on_step=True, on_epoch=False)
+        self.log_dict(metrics, prog_bar=True, on_step=True, on_epoch=True)
+
+        return bce
+
+    def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx: int) -> Tensor:
+        seq, extinct = batch
+        extinct_hat = self(seq)
+
+        bce = F.binary_cross_entropy_with_logits(extinct_hat.flatten(), extinct.float().flatten())
+        metrics = calc_acc(extinct_hat, extinct)
+        metrics = {f"val/{k}": v for k, v in metrics.items()}
+
+        self.log("val/bce", bce, prog_bar=True, on_step=False, on_epoch=True)
+        self.log_dict(metrics, prog_bar=True, on_step=False, on_epoch=True)
+
+        return bce
+
+    def configure_optimizers(self):  # type: ignore
+        opt = torch.optim.AdamW(self.parameters(), lr=1e-4)
+        # 2048 step warmup
+        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda=lambda step: min(step / 2048, 1))
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
+
+
+@torch.no_grad()
+def calc_acc(logits: Tensor, targets: Tensor) -> dict[str, Tensor]:
+    preds = logits.flatten().sigmoid() > 0.5
+    acc = (preds == targets.flatten()).float().mean()
+
+    zero_mask = targets.flatten() == 0
+    zero_acc = (preds[zero_mask] == targets.flatten()[zero_mask]).float().mean()
+    one_acc = (preds[~zero_mask] == targets.flatten()[~zero_mask]).float().mean()
+
+    return {"acc": acc, "zero_acc": zero_acc, "one_acc": one_acc}

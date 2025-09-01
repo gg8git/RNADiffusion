@@ -172,4 +172,4 @@ class VAEModule(pl.LightningModule):
 
     def sample_selfies_from_prior(self, batch_size=32):
         z = torch.randn(batch_size, self.model.n_acc, self.model.d_bnk)
-        return self.latent_to_selfies(z), z
+        return self.latent_to_selfies_batch(z), z

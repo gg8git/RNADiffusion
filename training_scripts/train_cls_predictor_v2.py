@@ -4,22 +4,23 @@ import torch
 from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar
 from lightning.pytorch.loggers import WandbLogger
 
-from model.diffusion_v2 import DataType, DiffusionDataModule, DiffusionModel, PredType
+from model.diffusion_v2 import DiffusionDataModule
+from model.diffusion_v2.GaussianDiffusion import ExtinctPredictor
 
 torch.set_float32_matmul_precision("medium")
 
 
-def main(data_type: DataType, pred_type: PredType):
-    model = DiffusionModel(data_type=data_type, pred_type=pred_type)
-
+def main(hdim: int):
     dm = DiffusionDataModule(
-        data_type=data_type,
+        data_type="peptide",
         batch_size=2048,
         num_workers=16,
+        return_extinct=True,
     )
 
     logger = WandbLogger(
         project="DiffuseOpt",
+        tags=["CLS_PRED"],
         offline=False,
     )
 
@@ -29,6 +30,8 @@ def main(data_type: DataType, pred_type: PredType):
         save_last=True,
         save_weights_only=True,
     )
+
+    model = ExtinctPredictor(hdim=hdim)
 
     trainer = L.Trainer(
         accelerator="gpu",

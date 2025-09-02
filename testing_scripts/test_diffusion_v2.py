@@ -285,18 +285,11 @@ def evaluate_on_batch(batch_size, diffusion_model, cond_fn, log_qei, bounds):
 
 
 # TODO: haydn verify if this makes any sense at all
-def cond_fn_gp_generator(qei_fn):
-    def predictor_ei(x, eps=1e-8, tau=None):
-        vals = qei_fn(x).clamp_min(eps)
-        if tau is None:
-            tau = torch.quantile(vals.detach(), 0.5).clamp_min(eps)
-        squashed = vals / (vals + tau)
-        return torch.log(squashed + eps)
-
+def cond_fn_gp_generator(log_qei):    
     def cond_fn_gp(z: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         with torch.enable_grad():
             z = z.detach().requires_grad_(True)
-            logits = predictor_ei(z.view(z.shape[0], -1))
+            logits = log_qei(z.view(z.shape[0], -1))
             logp = F.logsigmoid(logits)
             if logp.dim() > 1:
                 logp = logp.sum(dim=tuple(range(1, logp.dim())))
@@ -347,7 +340,7 @@ for i, batch in enumerate(dataloader):
             summary[f"(iter: {i + 1}, bsz: {batch_size})"] = evaluate_on_batch(
                 batch_size=batch_size,
                 diffusion_model=model,
-                cond_fn=cond_fn_gp_generator(qEI),
+                cond_fn=cond_fn_gp_generator(log_qEI),
                 log_qei=log_qEI,
                 bounds=bounds,
             )

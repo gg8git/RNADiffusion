@@ -8,7 +8,7 @@ from lightning.pytorch.loggers import WandbLogger
 from torch import Tensor
 
 from datamodules.vae_datamodule import VAEDataModule
-from model.rna_vae_model.RNAVAE import Config, RNAVAE
+from model.rna_vae_model.RNAVAE import RNAVAE, Config
 
 # torch.set_float32_matmul_precision("high")
 
@@ -94,9 +94,7 @@ def main(beta: float = 0.02):
         lr=1e-3,
     )
 
-    model = Wrapper.load_from_checkpoint(
-        "RNA_Diffusion/nb2skaky/checkpoints/last.ckpt", config=config
-    )
+    model = Wrapper.load_from_checkpoint("RNA_Diffusion/nb2skaky/checkpoints/last.ckpt", config=config)
 
     logger = WandbLogger(project="RNA_Diffusion", offline=False)
 

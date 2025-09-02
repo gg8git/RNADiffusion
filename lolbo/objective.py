@@ -1,7 +1,8 @@
 import numpy as np
-import torch
 import selfies as sf
-from data.guacamol_utils import smiles_to_desired_scores, GUACAMOL_TASK_NAMES
+import torch
+
+from data.guacamol_utils import GUACAMOL_TASK_NAMES, smiles_to_desired_scores
 from data.selfies_dataset import SELFIESDataset
 from model.mol_vae_model.BaseMolVAE import BaseVAE
 
@@ -133,11 +134,9 @@ class MoleculeObjective:
             self.dataobj.vocab2idx,
             d_bnk=16,
             n_acc=8,
-            
             d_dec=64,
             decoder_num_layers=3,
             decoder_dim_ff=256,
-            
             d_enc=256,
             encoder_dim_ff=512,
             encoder_num_layers=3,

@@ -1,10 +1,10 @@
 # ppgpr
-from .base import DenseNetwork
 import gpytorch
-from gpytorch.models import ApproximateGP
-from gpytorch.variational import CholeskyVariationalDistribution
-from gpytorch.variational import VariationalStrategy
 from botorch.posteriors.gpytorch import GPyTorchPosterior
+from gpytorch.models import ApproximateGP
+from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
+
+from .base import DenseNetwork
 
 # Multi-task Variational GP:
 # https://docs.gpytorch.ai/en/v1.4.2/examples/04_Variational_and_Approximate_GPs/SVGP_Multitask_GP_Regression.html

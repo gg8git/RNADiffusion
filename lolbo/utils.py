@@ -1,7 +1,7 @@
-import torch
 import math
-import selfies as sf
-from torch.utils.data import TensorDataset, DataLoader
+
+import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 
 def update_models_end_to_end(train_x, train_y_scores, objective, model, mll, learning_rte, num_update_epochs):

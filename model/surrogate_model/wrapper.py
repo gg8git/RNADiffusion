@@ -3,6 +3,7 @@ from botorch.posteriors import GPyTorchPosterior
 
 from .ppgpr import GPModelDKL
 
+
 class BoTorchDKLModelWrapper(GPyTorchModel):
     def __init__(self, model: GPModelDKL):
         super().__init__()

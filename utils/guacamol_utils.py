@@ -1,22 +1,15 @@
-import numpy as np
-import time
-import math
-from multiprocessing.pool import ThreadPool
 import itertools
-import time
-from rdkit.Contrib.SA_Score import sascorer
+import math
 
-from rdkit import Chem
-from rdkit.Chem import Crippen
 import networkx as nx
-from rdkit.Chem import rdmolops
-from rdkit.Chem.QED import qed
-from rdkit.Chem.Fingerprints import FingerprintMols
-from rdkit import DataStructs
-from rdkit.DataStructs.cDataStructs import FoldFingerprint
-from rdkit.DataStructs.cDataStructs import TanimotoSimilarity
-
+import numpy as np
 from guacamol import standard_benchmarks
+from rdkit import Chem, DataStructs
+from rdkit.Chem import Crippen, rdmolops
+from rdkit.Chem.Fingerprints import FingerprintMols
+from rdkit.Chem.QED import qed
+from rdkit.Contrib.SA_Score import sascorer
+from rdkit.DataStructs.cDataStructs import FoldFingerprint, TanimotoSimilarity
 
 med1 = standard_benchmarks.median_camphor_menthol()  #'Median molecules 1'
 med2 = standard_benchmarks.median_tadalafil_sildenafil()  #'Median molecules 2',
@@ -290,13 +283,11 @@ def check_smiles_equivalence(smile1, smile2):
     return smile1 == smile2
 
 
-
 # === DATA LOADING ===
 
 import numpy as np
 import pandas as pd
 import torch
-import math
 
 
 def load_molecule_train_data(

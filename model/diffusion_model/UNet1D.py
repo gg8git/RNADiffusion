@@ -8,10 +8,10 @@ from math import ceil, sqrt
 
 import torch
 import torch.nn.functional as F
+import torch.nn.utils.parametrize as parametrize
 from einops import pack, rearrange, repeat, unpack
 from torch import nn
 from torch.nn import Module, ModuleList
-import torch.nn.utils.parametrize as parametrize
 
 # helpers functions
 
@@ -166,9 +166,7 @@ class Attend(nn.Module):
         self.flash = flash
 
     def forward(self, q, k, v):
-        out = F.scaled_dot_product_attention(
-            q, k, v, dropout_p=self.dropout if self.training else 0.0
-        )
+        out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.0)
 
         return out
 
@@ -278,9 +276,7 @@ class Encoder(Module):
 
         self.block1 = nn.Sequential(MPSiLU(), Conv1d(curr_dim, dim_out, 3))
 
-        self.block2 = nn.Sequential(
-            MPSiLU(), nn.Dropout(dropout), Conv1d(dim_out, dim_out, 3)
-        )
+        self.block2 = nn.Sequential(MPSiLU(), nn.Dropout(dropout), Conv1d(dim_out, dim_out, 3))
 
         self.res_mp_add = MPAdd(t=mp_add_t)
 
@@ -346,9 +342,7 @@ class Decoder(Module):
 
         self.block1 = nn.Sequential(MPSiLU(), Conv1d(dim, dim_out, 3))
 
-        self.block2 = nn.Sequential(
-            MPSiLU(), nn.Dropout(dropout), Conv1d(dim_out, dim_out, 3)
-        )
+        self.block2 = nn.Sequential(MPSiLU(), nn.Dropout(dropout), Conv1d(dim_out, dim_out, 3))
 
         self.res_conv = Conv1d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
@@ -390,9 +384,7 @@ class Decoder(Module):
 
 
 class Attention(Module):
-    def __init__(
-        self, dim, heads=4, dim_head=64, num_mem_kv=4, flash=False, mp_add_t=0.3
-    ):
+    def __init__(self, dim, heads=4, dim_head=64, num_mem_kv=4, flash=False, mp_add_t=0.3):
         super().__init__()
         self.heads = heads
         hidden_dim = dim_head * heads
@@ -477,9 +469,7 @@ class KarrasUnet1D(Module):
 
         emb_dim = dim * 4
 
-        self.to_time_emb = nn.Sequential(
-            MPFourierEmbedding(fourier_dim), Linear(fourier_dim, emb_dim)
-        )
+        self.to_time_emb = nn.Sequential(MPFourierEmbedding(fourier_dim), Linear(fourier_dim, emb_dim))
 
         # class embedding
 
@@ -550,9 +540,7 @@ class KarrasUnet1D(Module):
             curr_res //= 2
             has_attn = curr_res in attn_res
 
-            downsample = Encoder(
-                curr_dim, dim_out, downsample=True, has_attn=has_attn, **block_kwargs
-            )
+            downsample = Encoder(curr_dim, dim_out, downsample=True, has_attn=has_attn, **block_kwargs)
 
             append(self.downs, downsample)
             prepend(self.ups, upsample)

@@ -1,18 +1,9 @@
-import json
-import time
 import gzip
 from pathlib import Path
-from typing import List, Union
 
-import lightning as L
 import torch
-from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import DataLoader, Dataset
-
-import selfies as sf
 
 # ====== MOL VAE ORIGINAL =====
-
 from model import VAEFlatWrapper
 
 device = torch.device("cuda")
@@ -101,12 +92,6 @@ print(m.shape, s.shape)
 # print(m.shape, s.shape)
 
 
-
-
-
-
-
-
 # device = torch.device("cuda")
 
 # dataobj = SELFIESDataset()
@@ -136,7 +121,7 @@ print(m.shape, s.shape)
 
 #         if i % (len(selfies) // 50) == 0:
 #             print(f"Reached batch {i}/{len(selfies)}")
-        
+
 #         if i == (len(selfies) // 3):
 #             mus_tensor = torch.stack(mus).squeeze(1)
 #             sigmas_tensor = torch.stack(sigmas).squeeze(1)
@@ -150,7 +135,7 @@ print(m.shape, s.shape)
 #             sigmas = []
 
 #             torch.cuda.empty_cache()
-        
+
 #         if i == 2*(len(selfies) // 3):
 #             mus_tensor = torch.stack(mus).squeeze(1)
 #             sigmas_tensor = torch.stack(sigmas).squeeze(1)

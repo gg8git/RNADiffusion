@@ -1,6 +1,6 @@
 import lightning as L
 import torch
-from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMProgressBar
+from lightning.pytorch.callbacks import ModelCheckpoint, TQDMProgressBar
 from lightning.pytorch.loggers import WandbLogger
 
 from datamodules import DiffusionDataModule
@@ -52,7 +52,9 @@ def main():
     )
 
     batch = next(iter(dm.train_dataloader()))
-    import ipdb; ipdb.set_trace()
+    import ipdb
+
+    ipdb.set_trace()
 
     logger = WandbLogger(project="SELFIES_Diffusion", offline=False, name="LowMany")
 

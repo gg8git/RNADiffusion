@@ -1,13 +1,14 @@
-import torch
-import gpytorch
 import math
+
+import gpytorch
+import lightning as L
+import torch
 from gpytorch.mlls import PredictiveLogLikelihood
-from lolbo.turbo import TurboState, update_state, generate_batch
+from RNADiffusion.model.GaussianDiffusion_deprecated import GaussianDiffusion1D
+
+from lolbo.turbo import TurboState, generate_batch, update_state
 from lolbo.utils import update_models_end_to_end, update_surr_model
 from model.surrogate_model.ppgpr import GPModelDKL
-
-import lightning as L
-from RNADiffusion.model.GaussianDiffusion_deprecated import GaussianDiffusion1D
 from model.UNet1D import KarrasUnet1D
 
 
@@ -122,14 +123,14 @@ class LOLBOState:
                 return self.diffusion(z)
 
             def training_step(self, batch, batch_idx):
-                batch = batch.reshape(-1,8,32).transpose(1,2)
+                batch = batch.reshape(-1, 8, 32).transpose(1, 2)
                 loss = self.forward(batch)
                 self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
                 return loss
 
             def configure_optimizers(self):
                 return torch.optim.Adam(self.diffusion.parameters(), lr=3e-4)
-        
+
         model = Wrapper()
 
         ckpt = torch.load("SELFIES_Diffusion/jj934sg6/checkpoints/last.ckpt", map_location="cpu")

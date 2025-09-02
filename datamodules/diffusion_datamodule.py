@@ -35,7 +35,7 @@ class DiffusionDataModule(L.LightningDataModule):
             # pin_memory=True,
             drop_last=True,
         )
-    
+
     def test_dataloader(self) -> DataLoader:
         test_data = self.dataset(self.data_dir, "test")
         return DataLoader(
@@ -59,6 +59,7 @@ class LatentDataset(Dataset):
         z = self.m[idx] + self.s[idx] * torch.randn_like(self.m[idx])
         return z
 
+
 class LatentDatasetClassifier(Dataset):
     def __init__(self, data_dir: str, split: str) -> None:
         self.m, self.s, self.cls, _, _ = torch.load(f"{data_dir}/low_all_{split}.pt")
@@ -70,6 +71,7 @@ class LatentDatasetClassifier(Dataset):
         z = self.m[idx] + self.s[idx] * torch.randn_like(self.m[idx])
         cls = self.cls[idx]
         return z, cls
+
 
 class LatentDatasetDescriptors(Dataset):
     def __init__(self, data_dir: str, split: str) -> None:

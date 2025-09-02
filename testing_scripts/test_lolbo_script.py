@@ -22,11 +22,11 @@ except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
 # from lolbo.objective import MoleculeObjective
+from data.guacamol_utils import compute_train_zs, load_molecule_train_data
 from lolbo.objective_lolbo import MoleculeObjective
-from data.guacamol_utils import load_molecule_train_data, compute_train_zs
 
 
-class Optimize(object):
+class Optimize:
     """
     Run LOLBO Optimization
     Args:
@@ -104,9 +104,7 @@ class Optimize(object):
         self.load_train_data()
         # initialize latent space objective (self.objective) for particular task
         self.initialize_objective()
-        assert isinstance(self.objective, MoleculeObjective), (
-            "self.objective must be an instance of MoleculeObjective"
-        )
+        assert isinstance(self.objective, MoleculeObjective), "self.objective must be an instance of MoleculeObjective"
         assert type(self.init_train_x) is list, "load_train_data() must set self.init_train_x to a list of xs"
         assert torch.is_tensor(self.init_train_y), "load_train_data() must set self.init_train_y to a tensor of ys"
         assert torch.is_tensor(self.init_train_z), "load_train_data() must set self.init_train_z to a tensor of zs"
@@ -219,7 +217,7 @@ class Optimize(object):
                 "total_number_of_e2e_updates": self.lolbo_state.tot_num_e2e_updates,
                 "best_input_seen": self.lolbo_state.best_x_seen,
             }
-            dict_log[f"TR_length"] = self.lolbo_state.tr_state.length
+            dict_log["TR_length"] = self.lolbo_state.tr_state.length
             self.tracker.log(dict_log)
 
         return self
@@ -230,7 +228,9 @@ class Optimize(object):
         self.create_wandb_tracker()
         # main optimization loop
         while self.lolbo_state.objective.num_calls < self.max_n_oracle_calls:
-            print(f'new loop, num calls: {self.lolbo_state.objective.num_calls}, curr best: {self.lolbo_state.best_score_seen}')
+            print(
+                f"new loop, num calls: {self.lolbo_state.objective.num_calls}, curr best: {self.lolbo_state.best_score_seen}"
+            )
 
             self.log_data_to_wandb_on_each_loop()
             # update models end to end when we fail to make
@@ -286,7 +286,7 @@ class Optimize(object):
             for ix, score in enumerate(self.lolbo_state.top_k_scores):
                 data_list.append([score, str(self.lolbo_state.top_k_xs[ix])])
             top_k_table = wandb.Table(columns=cols, data=data_list)
-            self.tracker.log({f"top_k_table": top_k_table})
+            self.tracker.log({"top_k_table": top_k_table})
             self.tracker.finish()
 
         return self

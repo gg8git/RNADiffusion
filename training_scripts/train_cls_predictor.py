@@ -1,17 +1,14 @@
-import selfies as sf
-import math
-
 import lightning as L
 import torch
 import torch.nn.functional as F
-from lightning.pytorch.callbacks import ModelCheckpoint, RichProgressBar, TQDMProgressBar, EarlyStopping
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, TQDMProgressBar
 from lightning.pytorch.loggers import WandbLogger
 
 from datamodules import DiffusionDataModule, LatentDatasetClassifier
-from RNADiffusion.model.mol_vae_model.FlatWrapper import VAEFlatWrapper
 from model.mol_score_model.conv_classifier import ConvScoreClassifier
 
 torch.set_float32_matmul_precision("medium")
+
 
 class Wrapper(L.LightningModule):
     def __init__(self):
@@ -26,9 +23,9 @@ class Wrapper(L.LightningModule):
     def _shared_step(self, batch, stage: str):
         # datamodule provides: z: (B, 8, 16), y: (B,) in {0,1}
         z, y = batch
-        logits = self(z)                       # (B, 2)
+        logits = self(z)  # (B, 2)
         y = y.long()
-        loss = F.cross_entropy(logits, y)      # CE expects raw logits
+        loss = F.cross_entropy(logits, y)  # CE expects raw logits
 
         # metrics
         preds = logits.argmax(dim=1)
@@ -36,8 +33,8 @@ class Wrapper(L.LightningModule):
 
         p1 = torch.softmax(logits, dim=1)[:, 1].mean()  # mean P(class=1) in batch
 
-        self.log(f"{stage}/loss", loss, on_step=(stage=="train"), on_epoch=True, prog_bar=True)
-        self.log(f"{stage}/acc",  acc,  on_step=False, on_epoch=True, prog_bar=True)
+        self.log(f"{stage}/loss", loss, on_step=(stage == "train"), on_epoch=True, prog_bar=True)
+        self.log(f"{stage}/acc", acc, on_step=False, on_epoch=True, prog_bar=True)
         self.log(f"{stage}/p1_mean", p1, on_step=False, on_epoch=True)
 
         return loss
@@ -66,30 +63,28 @@ def main():
     )
 
     batch = next(iter(dm.train_dataloader()))
-    import ipdb; ipdb.set_trace()
+    import ipdb
+
+    ipdb.set_trace()
 
     logger = WandbLogger(project="SELFIES_Diffusion", offline=False, name="ConvClassifier-qed")
 
     check = ModelCheckpoint(
-        monitor="val/loss",         # monitor validation loss
-        mode="min",                 # minimize val/loss
-        save_top_k=3,               # keep only the best checkpoint
-        save_last=True,             # also save the last epoch
-        every_n_epochs=2           # checkpoint less often for long training
+        monitor="val/loss",  # monitor validation loss
+        mode="min",  # minimize val/loss
+        save_top_k=3,  # keep only the best checkpoint
+        save_last=True,  # also save the last epoch
+        every_n_epochs=2,  # checkpoint less often for long training
     )
 
-    early = EarlyStopping(
-        monitor="val/loss",
-        patience=20,
-        mode="min"
-    )
+    early = EarlyStopping(monitor="val/loss", patience=20, mode="min")
 
     trainer = L.Trainer(
         accelerator="gpu",
         devices=-1,
         logger=logger,
         max_epochs=50,
-        check_val_every_n_epoch=1,  
+        check_val_every_n_epoch=1,
         precision="bf16-mixed",
         inference_mode=True,
         callbacks=[TQDMProgressBar(), check, early],

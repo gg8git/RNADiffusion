@@ -1,1 +1,1 @@
-from .diffusion_datamodule import DiffusionDataModule, LatentDataset, LatentDatasetDescriptors, LatentDatasetClassifier
+from .diffusion_datamodule import DiffusionDataModule, LatentDataset, LatentDatasetClassifier, LatentDatasetDescriptors

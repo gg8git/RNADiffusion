@@ -1,8 +1,10 @@
+from pathlib import Path
+
+import numpy as np
 import pandas as pd
 import selfies as sf
 import torch
-import numpy as np
-from pathlib import Path
+
 from model import VAEFlatWrapper
 
 # Read the parquet file
@@ -31,10 +33,10 @@ for i, smile in enumerate(smiles_list):
         mus.append(mu.detach().cpu())
         sigmas.append(sigma.detach().cpu())
         valid_idx.append(i)
-    except Exception as e:
+    except Exception:
         errors += 1
         # print(f"error #{errors} at index {i}: {e}")
-    
+
     if i % (len(df) // 50) == 0:
         print(f"Reached batch {i}/{len(df)}, with errors {errors}/{i}")
         torch.cuda.empty_cache()

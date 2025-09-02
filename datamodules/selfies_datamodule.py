@@ -1,14 +1,12 @@
-import json
 import gzip
-from pathlib import Path
-from typing import List
+import json
 
-import torch
-import selfies as sf
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader, Dataset
+import selfies as sf
+import torch
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, Dataset
 
 
 class SELFIESDataModule(pl.LightningDataModule):
@@ -35,12 +33,22 @@ class SELFIESDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(
-            self.train, batch_size=self.batch_size, pin_memory=True, shuffle=True, collate_fn=self.train.get_collate_fn, num_workers=10
+            self.train,
+            batch_size=self.batch_size,
+            pin_memory=True,
+            shuffle=True,
+            collate_fn=self.train.get_collate_fn,
+            num_workers=10,
         )
 
     def val_dataloader(self):
         return DataLoader(
-            self.val, batch_size=self.batch_size, pin_memory=True, shuffle=False, collate_fn=self.val.get_collate_fn, num_workers=10
+            self.val,
+            batch_size=self.batch_size,
+            pin_memory=True,
+            shuffle=False,
+            collate_fn=self.val.get_collate_fn,
+            num_workers=10,
         )
 
 
@@ -53,7 +61,7 @@ class SELFIESDataset(Dataset):
         self.data = []
         if load_data:
             assert fname is not None
-            with gzip.open(fname, 'rt') as f:
+            with gzip.open(fname, "rt") as f:
                 selfie_strings = [x.strip() for x in f.readlines()]
             for string in selfie_strings:
                 self.data.append(list(sf.split_selfies(string)))
@@ -71,21 +79,23 @@ class SELFIESDataset(Dataset):
 
     def encode(self, selfie):
         selfie = f"[start]{selfie}[stop]"
-        enc = sf.selfies_to_encoding(selfie, self.vocab2idx, enc_type='label')
+        enc = sf.selfies_to_encoding(selfie, self.vocab2idx, enc_type="label")
         return torch.tensor(enc, dtype=torch.long)
 
     def decode(self, tokens, drop_after_stop=True):
-        try :
-            selfie = sf.encoding_to_selfies(tokens.squeeze().tolist(), {v:k for k,v in self.vocab2idx.items()}, 'label')
+        try:
+            selfie = sf.encoding_to_selfies(
+                tokens.squeeze().tolist(), {v: k for k, v in self.vocab2idx.items()}, "label"
+            )
         except:
-            selfie = '[C]'
-        
-        if drop_after_stop and '[stop]' in selfie:
-            selfie = selfie[:selfie.find('[stop]')]
-        if '[pad]' in selfie:
-            selfie = selfie[:selfie.find('[pad]')]
-        if '[start]' in selfie:
-            selfie = selfie[selfie.find('[start]') + len('[start]'):]
+            selfie = "[C]"
+
+        if drop_after_stop and "[stop]" in selfie:
+            selfie = selfie[: selfie.find("[stop]")]
+        if "[pad]" in selfie:
+            selfie = selfie[: selfie.find("[pad]")]
+        if "[start]" in selfie:
+            selfie = selfie[selfie.find("[start]") + len("[start]") :]
         return selfie
 
     def __len__(self):
@@ -97,10 +107,11 @@ class SELFIESDataset(Dataset):
     @property
     def vocab_size(self):
         return len(self.vocab)
-    
+
     def get_collate_fn(self, fix_len=None):
         if fix_len and isinstance(fix_len, int):
-            def collate(batch: List[torch.Tensor]) -> torch.Tensor:
+
+            def collate(batch: list[torch.Tensor]) -> torch.Tensor:
                 batch = [x.squeeze(0) for x in batch]
                 padded_batch = []
                 for x in batch:
@@ -108,15 +119,17 @@ class SELFIESDataset(Dataset):
                     if length < fix_len:
                         # Pad to the right
                         pad_size = fix_len - length
-                        padded_x = F.pad(x, (0, pad_size), value=self.vocab2idx['[pad]'])
+                        padded_x = F.pad(x, (0, pad_size), value=self.vocab2idx["[pad]"])
                     else:
                         # Truncate
                         padded_x = x[:fix_len]
                     padded_batch.append(padded_x)
-                
+
                 return torch.stack(padded_batch, dim=0)
         else:
-            def collate(batch: List[torch.Tensor]) -> torch.Tensor:
+
+            def collate(batch: list[torch.Tensor]) -> torch.Tensor:
                 batch = [x.squeeze(0) for x in batch]
-                return pad_sequence(batch, batch_first=True, padding_value=self.vocab2idx['[pad]'])
+                return pad_sequence(batch, batch_first=True, padding_value=self.vocab2idx["[pad]"])
+
         return collate

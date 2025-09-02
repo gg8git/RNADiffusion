@@ -1,7 +1,8 @@
 import numpy as np
-import torch
 import selfies as sf
-from data.guacamol_utils import smiles_to_desired_scores, GUACAMOL_TASK_NAMES
+import torch
+
+from data.guacamol_utils import GUACAMOL_TASK_NAMES, smiles_to_desired_scores
 from data.selfies_dataset_lolbo import SELFIESDataset, collate_fn
 from model.mol_vae_lolbo.mol_vae import InfoTransformerVAE
 

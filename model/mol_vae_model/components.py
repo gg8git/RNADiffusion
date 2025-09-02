@@ -1,10 +1,9 @@
 from math import log
-from typing import Optional
 
 import torch
-from torch import Tensor, nn
 import torch.nn.functional as F
 from rotary_embedding_torch import RotaryEmbedding
+from torch import Tensor, nn
 
 
 class SinePosEnc(nn.Module):
@@ -16,16 +15,8 @@ class SinePosEnc(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         seq_len = x.shape[1]
-        pos = (
-            torch.arange(0, seq_len, device=x.device, dtype=x.dtype)
-            .unsqueeze(1)
-            .repeat(1, self.dim_model)
-        )
-        dim = (
-            torch.arange(0, self.dim_model, device=x.device, dtype=x.dtype)
-            .unsqueeze(0)
-            .repeat(seq_len, 1)
-        )
+        pos = torch.arange(0, seq_len, device=x.device, dtype=x.dtype).unsqueeze(1).repeat(1, self.dim_model)
+        dim = torch.arange(0, self.dim_model, device=x.device, dtype=x.dtype).unsqueeze(0).repeat(seq_len, 1)
         div = torch.exp(-log(10000) * (2 * (dim // 2) / self.dim_model))
         pos *= div
         pos[:, 0::2] = torch.sin(pos[:, 0::2])
@@ -36,8 +27,9 @@ class SinePosEnc(nn.Module):
         output = output + pos.unsqueeze(0)
         return self.dropout(output)
 
+
 class Embedding(nn.Module):
-    def __init__(self, n_tokens: int, d_embed: int, dropout: float = 0.1, padding_idx: Optional[int] = None):
+    def __init__(self, n_tokens: int, d_embed: int, dropout: float = 0.1, padding_idx: int | None = None):
         super().__init__()
 
         self.embedding = nn.Embedding(n_tokens, d_embed, padding_idx=padding_idx)
@@ -46,11 +38,9 @@ class Embedding(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.pos_enc(self.embedding(x))
 
+
 def causal_mask(sz: int, device: torch.device, dtype: torch.dtype):
-    return torch.triu(
-        torch.full((sz, sz), float('-inf'), device=device, dtype=dtype),
-        diagonal=1
-    )
+    return torch.triu(torch.full((sz, sz), float("-inf"), device=device, dtype=dtype), diagonal=1)
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -74,11 +64,12 @@ class TransformerEncoderLayer(nn.Module):
         self.dropout2 = nn.Dropout(dropout)
 
     def forward(
-            self,
-            src: Tensor,
-            src_mask: Optional[Tensor] = None,
-            src_key_padding_mask: Optional[Tensor] = None,
-            is_causal: bool = False) -> Tensor:
+        self,
+        src: Tensor,
+        src_mask: Tensor | None = None,
+        src_key_padding_mask: Tensor | None = None,
+        is_causal: bool = False,
+    ) -> Tensor:
         x = src
         x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, is_causal=is_causal)
         x = x + self.ff_out(self.norm2(x))
@@ -86,7 +77,9 @@ class TransformerEncoderLayer(nn.Module):
         return x
 
     # self-attention block
-    def _sa_block(self, x: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor], is_causal: bool = False) -> Tensor:
+    def _sa_block(
+        self, x: Tensor, attn_mask: Tensor | None, key_padding_mask: Tensor | None, is_causal: bool = False
+    ) -> Tensor:
         x = self.self_attn(x, x, x, attn_mask=attn_mask, key_padding_mask=key_padding_mask, is_causal=is_causal)
         return self.dropout1(x)
 
@@ -116,10 +109,10 @@ class TransformerDecoderLayer(nn.Module):
         self,
         tgt: Tensor,
         memory: Tensor,
-        tgt_mask: Optional[Tensor] = None,
-        memory_mask: Optional[Tensor] = None,
-        tgt_key_padding_mask: Optional[Tensor] = None,
-        memory_key_padding_mask: Optional[Tensor] = None,
+        tgt_mask: Tensor | None = None,
+        memory_mask: Tensor | None = None,
+        tgt_key_padding_mask: Tensor | None = None,
+        memory_key_padding_mask: Tensor | None = None,
     ) -> Tensor:
         x = tgt
         x = x + self._sa_block(self.norm1(x), tgt_mask, tgt_key_padding_mask)
@@ -129,19 +122,22 @@ class TransformerDecoderLayer(nn.Module):
         return x
 
     # self-attention block
-    def _sa_block(self, x: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor]) -> Tensor:
-        x = self.self_attn(x, x, x,
-                           attn_mask=attn_mask,
-                           key_padding_mask=key_padding_mask,
+    def _sa_block(self, x: Tensor, attn_mask: Tensor | None, key_padding_mask: Tensor | None) -> Tensor:
+        x = self.self_attn(
+            x,
+            x,
+            x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
         )
         return self.dropout1(x)
 
-    def _mha_block(self, x: Tensor, mem: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor]) -> Tensor:
-        x = self.multihead_attn(x, mem, mem,
-                                attn_mask=attn_mask,
-                                key_padding_mask=key_padding_mask,
-                                need_weights=False)[0]
+    def _mha_block(self, x: Tensor, mem: Tensor, attn_mask: Tensor | None, key_padding_mask: Tensor | None) -> Tensor:
+        x = self.multihead_attn(
+            x, mem, mem, attn_mask=attn_mask, key_padding_mask=key_padding_mask, need_weights=False
+        )[0]
         return self.dropout2(x)
+
 
 class SwiGLU(nn.Module):
     def __init__(self, *args, **kwargs) -> None:
@@ -149,7 +145,7 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         x, gate = x.chunk(2, dim=-1)
-        return F.silu(gate)*x
+        return F.silu(gate) * x
 
 
 class MultiheadAttention(nn.Module):
@@ -160,11 +156,9 @@ class MultiheadAttention(nn.Module):
         self.heads = heads
         self.head_dim = embed_size // heads
         self.dropout = dropout
-        self.batch_first=True
+        self.batch_first = True
 
-        assert (
-            self.head_dim * heads == embed_size
-        ), "Embedding size needs to be divisible by heads"
+        assert self.head_dim * heads == embed_size, "Embedding size needs to be divisible by heads"
 
         self.q_proj = nn.Linear(self.embed_size, self.embed_size, bias=False)
         self.k_proj = nn.Linear(self.embed_size, self.embed_size, bias=False)
@@ -185,7 +179,7 @@ class MultiheadAttention(nn.Module):
         if key_padding_mask is not None:
             key_mask = key_padding_mask.view(N, 1, 1, sl).expand(N, self.heads, sl, sl)
             mask = mask + key_mask if mask is not None else key_mask
-        
+
         q = self.q_proj(q)
         k = self.k_proj(k)
         v = self.v_proj(v)

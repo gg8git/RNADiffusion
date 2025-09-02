@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
 
 import hnn_utils.nn as hnn
 import hnn_utils.nn.functional as HNNF
@@ -13,7 +12,7 @@ from torch.distributions import Normal
 
 @dataclass
 class Config:
-    vocab: Dict[str, int]
+    vocab: dict[str, int]
 
     d_model: int = 256
     dim_ff: int = 512
@@ -47,7 +46,7 @@ class RNAVAE(L.LightningModule):
 
         self.reset_parameters()
 
-    def forward(self, tokens: Tensor) -> Tuple[Tensor, Dict]:
+    def forward(self, tokens: Tensor) -> tuple[Tensor, dict]:
         # Pad with 4 stop tokens
         tokens = F.pad(tokens, (0, 4), value=self.stop_idx)
 
@@ -126,9 +125,7 @@ class UpConv1DBlock(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.block = nn.Sequential(
-            nn.ConvTranspose1d(
-                dim, dim, kernel_size=5, padding=2, stride=2, output_padding=1
-            ),
+            nn.ConvTranspose1d(dim, dim, kernel_size=5, padding=2, stride=2, output_padding=1),
             nn.SiLU(),
             nn.Conv1d(dim, dim, kernel_size=1),
             nn.SiLU(),
@@ -313,7 +310,7 @@ def compute_stats(
     tokens: Tensor,
     logits: Tensor,
     post: Normal,
-) -> Tuple[Tensor, Dict]:
+) -> tuple[Tensor, dict]:
     nll = cross_entropy(logits, tokens).mean()
     kl = HNNF.gaussian_kl_standard_normal(post.loc, post.scale).mean(dim=0)
 
@@ -340,7 +337,7 @@ def compute_stats(
 
 def kl_balancer_coeff(
     num_scales: int,
-    groups_per_scale: List[int],
+    groups_per_scale: list[int],
 ) -> torch.Tensor:
     """
     NVAE KL balancing coefficients for each level of the hierarchy.

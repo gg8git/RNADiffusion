@@ -1,10 +1,11 @@
 import math
-import torch
 from dataclasses import dataclass
-from torch.quasirandom import SobolEngine
+
+import torch
 from botorch.acquisition import qExpectedImprovement
-from botorch.optim import optimize_acqf
 from botorch.generation import MaxPosteriorSampling
+from botorch.optim import optimize_acqf
+from torch.quasirandom import SobolEngine
 
 
 @dataclass
@@ -109,18 +110,26 @@ def generate_batch(
         # Sample on the candidate points
         thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)
         X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size)
-    
+
     if acqf == "ddim":
-        assert (diffusion is not None)
+        assert diffusion is not None
 
         ei = qExpectedImprovement(model.cuda(), Y.max().cuda())
+
         def neg_qei(z, t):
-            z = z.transpose(1,2).reshape(batch_size, 2, -1).reshape(batch_size, -1)
+            z = z.transpose(1, 2).reshape(batch_size, 2, -1).reshape(batch_size, -1)
             return -1 * ei(z)
 
         shape = (batch_size, diffusion.channels, diffusion.seq_length)
-        latents = diffusion.ddim_sample(shape, class_labels=None, cond_fn=neg_qei, bounds=torch.stack([tr_lb, tr_ub]).cuda(), grad_scale=10.0, eta=0.1)
-        X_next = latents.transpose(1,2).reshape(batch_size, 2, -1).reshape(batch_size, -1)
+        latents = diffusion.ddim_sample(
+            shape,
+            class_labels=None,
+            cond_fn=neg_qei,
+            bounds=torch.stack([tr_lb, tr_ub]).cuda(),
+            grad_scale=10.0,
+            eta=0.1,
+        )
+        X_next = latents.transpose(1, 2).reshape(batch_size, 2, -1).reshape(batch_size, -1)
 
         X_next_ei, _ = optimize_acqf(
             ei,

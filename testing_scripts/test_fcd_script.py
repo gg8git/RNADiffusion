@@ -1,16 +1,12 @@
-import gzip
-from pathlib import Path
-
 import lightning as L
-import torch
-
 import selfies as sf
-from rdkit import Chem
-from fcd import get_fcd
+import torch
 from datasets import load_dataset
+from fcd import get_fcd
+from rdkit import Chem
 
 from model import GaussianDiffusion1D, KarrasUnet1D, VAEFlatWrapper
-from datamodules import DiffusionDataModule
+
 
 def load_diffusion_model(load_model_checkpoint):
     class Wrapper(L.LightningModule):
@@ -33,13 +29,15 @@ def load_diffusion_model(load_model_checkpoint):
                 timesteps=1000,
                 objective="pred_noise",
             )
+
     model = Wrapper()
-    
+
     ckpt = torch.load(load_model_checkpoint, map_location="cpu")
     model.load_state_dict(ckpt["state_dict"])
     diffusion = model.diffusion
     diffusion.eval()
     return diffusion.cuda()
+
 
 def diffuse_batch(batch_size, diffusion_model):
     return diffusion_model.ddim_sample(
@@ -47,6 +45,7 @@ def diffuse_batch(batch_size, diffusion_model):
         sampling_timesteps=50,
         use_self_cond=True,
     )
+
 
 def latent_to_smiles(z):
     vae_wrapper = VAEFlatWrapper(path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt")

@@ -1,8 +1,10 @@
 from math import log
+
 import pytorch_lightning as pl
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+
 from data.selfies_dataset_lolbo import SELFIESDataset
 
 

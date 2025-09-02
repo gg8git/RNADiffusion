@@ -21,10 +21,7 @@ class KLCalc(Metric):
     def compute(self) -> torch.Tensor:
         mu, sigma = self.get_latents()
 
-        mkl = kl_divergence(
-            Normal(mu, sigma),
-            Normal(0, 1)
-        ).mean(dim=0)
+        mkl = kl_divergence(Normal(mu, sigma), Normal(0, 1)).mean(dim=0)
 
         alive = mkl[mkl > self.dead_cutoff]
 
@@ -41,6 +38,7 @@ class KLCalc(Metric):
         means = comb(self.means)
         stds = comb(self.stds)
         return means, stds
+
 
 def comb(val) -> torch.Tensor:
     if isinstance(val, list) and val:

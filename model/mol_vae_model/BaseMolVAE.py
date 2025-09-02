@@ -1,16 +1,18 @@
 import lightning.pytorch as pl
 import torch
-from torch import nn
-from torch.nn import functional as F
-from torch.distributions import kl_divergence, Normal, Categorical
 from hnn_utils import nn as HNN
+from torch import nn
+from torch.distributions import Categorical, Normal, kl_divergence
+from torch.nn import functional as F
 
-from .components import Embedding, causal_mask, TransformerDecoderLayer, TransformerEncoderLayer
+from .components import Embedding, causal_mask
 
 MIN_STD = 1e-4
 
+
 class BaseVAE(pl.LightningModule):
-    def __init__(self,
+    def __init__(
+        self,
         vocab: dict[str, int],
         n_acc: int = 2,
         d_enc: int = 128,
@@ -33,24 +35,28 @@ class BaseVAE(pl.LightningModule):
         self.d_bnk = d_bnk
         self.n_acc = n_acc
 
-        self.vocab      = vocab
+        self.vocab = vocab
         self.vocab_size = len(self.vocab)
 
         self.kl_factor = kl_factor
 
-        self.encoder_token_embedding = Embedding(n_tokens=self.vocab_size, d_embed=d_enc, dropout=encoder_dropout, padding_idx=self.pad_tok)
-        self.decoder_token_embedding = Embedding(n_tokens=self.vocab_size, d_embed=d_dec, dropout=decoder_dropout, padding_idx=self.pad_tok)
+        self.encoder_token_embedding = Embedding(
+            n_tokens=self.vocab_size, d_embed=d_enc, dropout=encoder_dropout, padding_idx=self.pad_tok
+        )
+        self.decoder_token_embedding = Embedding(
+            n_tokens=self.vocab_size, d_embed=d_dec, dropout=decoder_dropout, padding_idx=self.pad_tok
+        )
 
         self.enc_neck = nn.Sequential(
-            nn.Linear(d_enc, 4*d_bnk),
+            nn.Linear(d_enc, 4 * d_bnk),
             nn.GELU(),
-            nn.Linear(4*d_bnk, 2*d_bnk),
+            nn.Linear(4 * d_bnk, 2 * d_bnk),
         )
 
         self.dec_neck = nn.Sequential(
-            nn.Linear(d_bnk, 4*d_dec),
+            nn.Linear(d_bnk, 4 * d_dec),
             nn.GELU(),
-            nn.Linear(4*d_dec, d_dec),
+            nn.Linear(4 * d_dec, d_dec),
         )
 
         self.dec_tok_deproj = nn.Linear(d_dec, self.vocab_size)
@@ -83,9 +89,11 @@ class BaseVAE(pl.LightningModule):
         embed = torch.cat([self.acc_toks.expand(tokens.shape[0], self.n_acc, self.d_enc), embed], dim=1)
 
         pad_mask = tokens == self.pad_tok
-        pad_mask = torch.cat([torch.full((tokens.shape[0], self.n_acc), False, dtype=torch.bool, device=tokens.device), pad_mask], dim=1)
+        pad_mask = torch.cat(
+            [torch.full((tokens.shape[0], self.n_acc), False, dtype=torch.bool, device=tokens.device), pad_mask], dim=1
+        )
 
-        encoding = self.encoder(embed, src_pad_mask=pad_mask)[:, :self.n_acc]
+        encoding = self.encoder(embed, src_pad_mask=pad_mask)[:, : self.n_acc]
         encoding = self.enc_neck(encoding)
 
         mu, sigma = encoding.chunk(2, dim=-1)
@@ -107,7 +115,7 @@ class BaseVAE(pl.LightningModule):
 
     def forward(self, tokens):
         mu, sigma = self.encode(tokens)
-        z = mu + torch.randn_like(sigma)*sigma
+        z = mu + torch.randn_like(sigma) * sigma
 
         logits = self.decode(z, tokens)
 
@@ -122,10 +130,7 @@ class BaseVAE(pl.LightningModule):
         else:
             kl_fac = self.kl_factor
 
-        kldiv = kl_divergence(
-            Normal(mu, sigma),
-            Normal(0, 1)
-        )
+        kldiv = kl_divergence(Normal(mu, sigma), Normal(0, 1))
         kldiv = kldiv.mean() + (kldiv.mean(dim=0) - kldiv.detach().mean()).abs().mean()
 
         loss = recon_loss + kl_fac * kldiv
@@ -147,7 +152,7 @@ class BaseVAE(pl.LightningModule):
             sigma_mean=sigma_mean,
             mu_ign=mu,
             sigma_ign=sigma,
-            kl_factor=kl_fac
+            kl_factor=kl_fac,
         )
 
     @torch.inference_mode()
@@ -155,7 +160,7 @@ class BaseVAE(pl.LightningModule):
         self.eval()
 
         tokens = torch.full((z.shape[0], 1), fill_value=self.start_tok, dtype=torch.long).cuda()
-        while True: # Loop until every molecule hits a stop token
+        while True:  # Loop until every molecule hits a stop token
             logits = self.decode(z, tokens)[:, -1:]
             if argmax:
                 sample = logits.argmax(dim=-1)
@@ -166,12 +171,12 @@ class BaseVAE(pl.LightningModule):
 
             if (tokens == self.stop_tok).any(dim=-1).all() or tokens.shape[1] > max_len:
                 break
-        
-        return tokens[:, 1:] # Cut out start token
+
+        return tokens[:, 1:]  # Cut out start token
 
     def add_acc_toks(self):
-        self.register_parameter('acc_toks', nn.Parameter(torch.randn(1, self.n_acc, self.d_enc)))
-    
+        self.register_parameter("acc_toks", nn.Parameter(torch.randn(1, self.n_acc, self.d_enc)))
+
     def custom_load_state_dict(self, state_dict, strict=True):
         state_dict = state_dict["state_dict"]
 
@@ -182,17 +187,17 @@ class BaseVAE(pl.LightningModule):
             else:
                 new_key = key
             new_state_dict[new_key] = state_dict[key]
-        
+
         self.load_state_dict(new_state_dict, strict)
 
     @property
     def start_tok(self):
-        return self.vocab['[start]']
+        return self.vocab["[start]"]
 
     @property
     def stop_tok(self):
-        return self.vocab['[stop]']
+        return self.vocab["[stop]"]
 
     @property
     def pad_tok(self):
-        return self.vocab['[pad]']
+        return self.vocab["[pad]"]

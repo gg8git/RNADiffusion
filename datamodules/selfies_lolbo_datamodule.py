@@ -1,9 +1,10 @@
-import torch
-import selfies as sf
-import pytorch_lightning as pl
-from torch.utils.data import DataLoader, Dataset
-import torch.nn.functional as F
 from pathlib import Path
+
+import pytorch_lightning as pl
+import selfies as sf
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
 
 
 class SELFIESDataModule(pl.LightningDataModule):
@@ -145,11 +146,11 @@ class SELFIESDataset(Dataset):
         self.data = []
         if load_data:
             assert fname is not None
-            with open(fname, "r") as f:
-                selfie_strings = [x.strip() for x in f.readlines()]
+            with open(fname) as f:
+                selfie_strings = [x.strip() for x in f]
             for string in selfie_strings:
                 self.data.append(list(sf.split_selfies(string)))
-            self.vocab = set((token for selfie in self.data for token in selfie))
+            self.vocab = set(token for selfie in self.data for token in selfie)
             self.vocab.discard(".")
             self.vocab = ["<start>", "<stop>", *sorted(list(self.vocab))]
         else:

@@ -68,10 +68,10 @@ def rand_acq(batch_size, log_qei):
 def optimize_acqf_acq(batch_size, log_qei):
     shape = (model.vae.n_acc * model.vae.d_bnk,)
     z, _ = optimize_acqf(
-        acq_function=cond_fn_log_ei_generator(log_qei),
+        acq_function=log_qei,
         bounds=torch.vstack(
             [torch.full(shape, -3.0), torch.full(shape, 3.0)],
-        ),
+        ).cuda(),
         q=batch_size,
         num_restarts=10,
         raw_samples=256,
@@ -79,15 +79,15 @@ def optimize_acqf_acq(batch_size, log_qei):
     return z
 
 
-def get_batch_scores(batch_z, mode="pdop"):
+def get_batch_scores(batch_z, task="pdop"):
     with torch.no_grad():
         # find a way to use diffusion model vae
         batch_tokens = model.vae.sample(batch_z)
         batch_smiles = model.vae.detokenize(batch_tokens)
-        scores = smiles_to_desired_scores(batch_smiles, mode)
+        scores = smiles_to_desired_scores(batch_smiles, task)
     batch_y = torch.tensor(scores, device=model.device, dtype=torch.float32)
     flat_batch_z = batch_z.reshape(batch_z.size(0), -1)
-    return flat_batch_z, batch_y
+    return flat_batch_z.cuda(), batch_y.cuda()
 
 
 #################################
@@ -112,13 +112,8 @@ def update_surr_model(surr_model, mll, learning_rte, train_z, train_y, n_epochs)
 
     return surr_model
 
-
-#################################
-### Setup 
-#################################
-
-def init_surr_model(num_init=10_000):
-    df = pl.read_csv("./data/guacamol/guacamol_train_data_first_20k.csv").select("smile", "logp").head(num_init)
+def init_surr_model(task="pdop", num_init_pts=10_000):
+    df = pl.read_csv("./data/guacamol/guacamol_train_data_first_20k.csv").select("smile", task).head(num_init_pts)
 
     latents = []
     for subdf in df.iter_slices(4096):
@@ -128,13 +123,13 @@ def init_surr_model(num_init=10_000):
         latents.append(z.flatten(1))
 
     train_x = torch.vstack(latents).cuda()
-    train_y = df["logp"].to_torch().cuda()
+    train_y = df[task].to_torch().cuda()
 
     surrogate_model = GPModelDKL(
         train_x[:1024].cuda(),
         likelihood=gpytorch.likelihoods.GaussianLikelihood().cuda(),
     ).cuda()
-    surrogate_mll = PredictiveLogLikelihood(surrogate_model.likelihood, surrogate_model, num_data=train_x.shape[-1])
+    surrogate_mll = PredictiveLogLikelihood(surrogate_model.likelihood, surrogate_model, num_data=train_x.shape[-1]).cuda()
 
     update_surr_model(
         surrogate_model,
@@ -145,27 +140,28 @@ def init_surr_model(num_init=10_000):
         n_epochs=20,
     )
 
-    return surrogate_model, surrogate_mll
+    return surrogate_model, surrogate_mll, train_x, train_y
 
 
 ######################
 ### BO Loop 
 ######################
 
-def bo_loop(batch_size, acq_func, surrogate_model, surrogate_mll, all_y):
+def bo_loop(task, batch_size, acq_func, surrogate_model, surrogate_mll, all_y, verbose=False):
     # acquisition
     log_ei_mod = qLogExpectedImprovement(
         model=surrogate_model,  # type: ignore
         best_f=all_y.max(),
     )
     
-    acq_batch_z = acq_func(batch_size, log_ei_mod)
-    _, acq_batch_y = get_batch_scores(acq_batch_z)
+    acq_batch_z = acq_func(batch_size, log_ei_mod).cuda()
+    _, acq_batch_y = get_batch_scores(acq_batch_z, task)
 
     with torch.no_grad():
-        acq_logei = log_ei_mod(acq_batch_z.unsqueeze(1))
+        acq_logei = log_ei_mod(acq_batch_z)
 
-    print(f"acq - prev max: {all_y.max().detach().cpu().item()}, batch max: {acq_batch_y.max().detach().cpu().item()}, batch logei: {acq_logei}")
+    if verbose or (acq_batch_y.max() > all_y.max()):
+        print(f"acq - prev max: {all_y.max().detach().cpu().item():.5f}, batch max: {acq_batch_y.max().detach().cpu().item():.5f}, batch logei: {acq_logei.detach().cpu().item():.5f}")
 
     # update surr model
     update_surr_model(
@@ -184,25 +180,29 @@ def bo_loop(batch_size, acq_func, surrogate_model, surrogate_mll, all_y):
 ### Run BO
 ######################
 
-def run_bo(acq_batch_size, max_oracle_calls, acq_func):
-    surrogate_model, surrogate_mll, all_z, all_y = init_surr_model()
+def run_bo(task, acq_batch_size, max_oracle_calls, init_oracle_calls, acq_func, verbose=False):
+    surrogate_model, surrogate_mll, all_z, all_y = init_surr_model(task, init_oracle_calls)
 
     num_oracle_calls = 0
     while num_oracle_calls < max_oracle_calls:
         print(f"loop - num_oracle_calls: {num_oracle_calls}")
-        surrogate_model, acq_batch_z, acq_batch_y = bo_loop(acq_batch_size, acq_func, surrogate_model, surrogate_mll, all_y)
+        surrogate_model, acq_batch_z, acq_batch_y = bo_loop(task, acq_batch_size, acq_func, surrogate_model, surrogate_mll, all_y, verbose=verbose)
         all_z = torch.cat([all_z, acq_batch_z], dim=0)
         all_y = torch.cat([all_y, acq_batch_y], dim=0)
         num_oracle_calls += acq_batch_size
     
-    print(f"finish - max: {all_y.max().detach().cpu().item()}")
+    print(f"finish - max: {all_y.max().detach().cpu().item():.5f}")
     return all_y.max().detach().cpu().item()
 
-ACQ_BATCH_SIZE = 256
+TASK = "pdop"
+ACQ_BATCH_SIZE = 16
 MAX_ORACLE_CALLS = 100_000
+INIT_ORACLE_CALLS = 10_000
+VERBOSE = True
+
 maxs = []
-for acq_func in [ddim_no_cond_acq, ddim_cond_acq, optimize_acqf_acq]:
-    maxs.append(run_bo(ACQ_BATCH_SIZE, MAX_ORACLE_CALLS, acq_func))
+for acq_func in [optimize_acqf_acq, ddim_cond_acq, ddim_no_cond_acq]:
+    maxs.append(run_bo(TASK, ACQ_BATCH_SIZE, MAX_ORACLE_CALLS, INIT_ORACLE_CALLS, acq_func, verbose=VERBOSE))
 print(f"summary: {maxs}")
 
 

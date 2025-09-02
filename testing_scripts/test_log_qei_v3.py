@@ -38,7 +38,7 @@ model = DiffusionModel.load_from_checkpoint("./data/molecule_diffusion.ckpt")
 model.cuda()
 model.freeze()
 
-# df = pl.read_csv("./data/guacamol/guacamol_train_data_first_20k.txt").select("smile", "logp").head(10_000)
+# df = pl.read_csv("./data/guacamol_train_data_first_20k.txt").select("smile", "logp").head(10_000)
 df = pl.read_csv("./data/guacamol/guacamol_train_data_first_20k.csv").select("smile", "logp").head(10_000)
 
 latents = []
@@ -118,7 +118,14 @@ logei_optim_z, _ = optimize_acqf(
 with torch.no_grad():
     logei_optim_z_pred = log_ei_mod(logei_optim_z.unsqueeze(1))
 
+print("=== Individual Evals ===")
 print(f"DDIM guided samples:   {logei_guide_z_pred.mean():.3f} ± {logei_guide_z_pred.std():.3f}")
 print(f"DDIM unguided samples: {logei_ddim_z_pred.mean():.3f} ± {logei_ddim_z_pred.std():.3f}")
 print(f"Random samples:        {logei_rand_z_pred.mean():.3f} ± {logei_rand_z_pred.std():.3f}")
 print(f"Optimized samples:     {logei_optim_z_pred.mean():.3f} ± {logei_optim_z_pred.std():.3f}")
+
+print("=== Batch (qEI) Evals ===")
+print(f"DDIM guided samples:   {log_ei_mod(logei_guide_z).detach().cpu().item():.3f}")
+print(f"DDIM unguided samples: {log_ei_mod(logei_ddim_z).detach().cpu().item():.3f}")
+print(f"Random samples:        {log_ei_mod(logei_rand_z).detach().cpu().item():.3f}")
+print(f"Optimized samples:     {log_ei_mod(logei_optim_z).detach().cpu().item():.3f}")

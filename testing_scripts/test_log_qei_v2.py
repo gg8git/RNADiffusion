@@ -31,13 +31,15 @@ from datamodules.diffusion_datamodule import DiffusionDataModule, LatentDataset
 from model import GPModelDKL
 from utils.guacamol_utils import smiles_to_desired_scores
 
+import ipdb; ipdb.set_trace()
 DATA_BATCH_SIZE = 1024
 MODE = "pdop"
-SURR_ITERS = [1, 4, 16, 64, 256]
+NUM_INIT_ITERS = 10
+SURR_ITERS = [0, 1, 4, 16, 64, 256]
 ACQ_BATCH_SIZES = [4, 16, 64, 128, 256]
 
 # TODO: improve logging
-LOG_NAME = "v2_testing_2"
+LOG_NAME = "v2_testing_3"
 LOG_PATH = f"./results/log_{LOG_NAME}.json" if LOG_NAME is not None else None
 
 
@@ -198,15 +200,26 @@ max_score = float("-inf")
 best_z = None
 
 summary = {}
+init_batch = []
 for i, batch in enumerate(dataloader):
+    if i + 1 < NUM_INIT_ITERS:
+        init_batch.append(batch)
+        continue
+    
+    n_surr_epochs = 10
+    if i + 1 == NUM_INIT_ITERS:
+        init_batch.append(batch)
+        batch = torch.cat(init_batch, dim=0)
+        n_surr_epochs = 100
+
     batch_z, batch_y = get_batch_scores(batch, MODE)
-    surrogate_model = update_surr_model(surrogate_model, surrogate_mll, 0.002, batch_z, batch_y, 100)
+    surrogate_model = update_surr_model(surrogate_model, surrogate_mll, 0.002, batch_z, batch_y, n_surr_epochs)
     batch_max_score, batch_max_idx = batch_y.max(dim=0)
     if batch_max_score.item() > max_score:
         max_score = batch_max_score.item()
         best_z = batch_z[batch_max_idx].detach().clone()
 
-    if i + 1 in SURR_ITERS:
+    if (i + 1) - NUM_INIT_ITERS in SURR_ITERS:
         best_f = torch.tensor(max_score, device=model.device, dtype=torch.float32)
 
         lb = torch.full_like(best_z, -3)

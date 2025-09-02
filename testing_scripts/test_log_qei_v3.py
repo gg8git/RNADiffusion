@@ -1,7 +1,8 @@
 import gpytorch
 import polars as pl
 import torch
-from botorch.acquisition import LogExpectedImprovement
+from botorch.acquisition import qLogExpectedImprovement
+from botorch.optim import optimize_acqf
 from gpytorch.mlls import PredictiveLogLikelihood
 from rdkit import RDLogger
 from torch.utils.data import DataLoader, TensorDataset
@@ -65,7 +66,7 @@ update_surr_model(
     n_epochs=20,
 )
 
-log_ei_mod = LogExpectedImprovement(
+log_ei_mod = qLogExpectedImprovement(
     model=surrogate_model,  # type: ignore
     best_f=train_y.max(),
 )
@@ -83,7 +84,14 @@ def cond_fn_log_ei(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     return grad_x.detach()
 
 
-logei_guide_z = model.ddim_sample(batch_size=128, sampling_steps=50, guidance_scale=1.0, cond_fn=cond_fn_log_ei)
+N = 256
+
+logei_guide_z = model.ddim_sample(
+    batch_size=N,
+    sampling_steps=50,
+    guidance_scale=1.0,
+    cond_fn=cond_fn_log_ei,
+)
 with torch.no_grad():
     logei_guide_z_pred = log_ei_mod(logei_guide_z.unsqueeze(1))
 
@@ -92,12 +100,25 @@ with torch.no_grad():
     logei_rand_z_pred = log_ei_mod(logei_rand_z.unsqueeze(1))
 
 logei_ddim_z = model.ddim_sample(
-    batch_size=128,
+    batch_size=N,
     sampling_steps=50,
 )
 with torch.no_grad():
     logei_ddim_z_pred = log_ei_mod(logei_ddim_z.unsqueeze(1))
 
-print(f"LogEI guided samples: {logei_guide_z_pred.mean():.3f} ± {logei_guide_z_pred.std():.3f}")
-print(f"Random samples:       {logei_rand_z_pred.mean():.3f} ± {logei_rand_z_pred.std():.3f}")
-print(f"LogEI DDIM samples:   {logei_ddim_z_pred.mean():.3f} ± {logei_ddim_z_pred.std():.3f}")
+logei_optim_z, _ = optimize_acqf(
+    acq_function=log_ei_mod,
+    bounds=torch.vstack(
+        [torch.full_like(train_x.min(0).values, -6.0), torch.full_like(train_x.max(0).values, 6.0)],
+    ),
+    q=N,
+    num_restarts=10,
+    raw_samples=256,
+)
+with torch.no_grad():
+    logei_optim_z_pred = log_ei_mod(logei_optim_z.unsqueeze(1))
+
+print(f"DDIM guided samples:   {logei_guide_z_pred.mean():.3f} ± {logei_guide_z_pred.std():.3f}")
+print(f"DDIM unguided samples: {logei_ddim_z_pred.mean():.3f} ± {logei_ddim_z_pred.std():.3f}")
+print(f"Random samples:        {logei_rand_z_pred.mean():.3f} ± {logei_rand_z_pred.std():.3f}")
+print(f"Optimized samples:     {logei_optim_z_pred.mean():.3f} ± {logei_optim_z_pred.std():.3f}")

@@ -39,7 +39,7 @@ SURR_ITERS = [0, 1, 4, 16, 64, 256]
 ACQ_BATCH_SIZES = [4, 16, 64, 128, 256]
 
 # TODO: improve logging
-LOG_NAME = "v2_testing_3"
+LOG_NAME = "v2_testing_4"
 LOG_PATH = f"./results/log_{LOG_NAME}.json" if LOG_NAME is not None else None
 
 
@@ -171,19 +171,19 @@ def evaluate_on_batch(batch_size, diffusion_model, cond_fn, log_qei, bounds):
 
 
 # TODO: haydn verify if this makes any sense at all
-def cond_fn_gp_generator(log_qei):
-    def cond_fn_gp(z: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+def cond_fn_log_ei_generator(log_ei_mod):
+    def cond_fn_log_ei(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         with torch.enable_grad():
-            z = z.detach().requires_grad_(True)
-            logits = log_qei(z.view(z.shape[0], -1))
-            logp = F.logsigmoid(logits)
-            if logp.dim() > 1:
-                logp = logp.sum(dim=tuple(range(1, logp.dim())))
-            s = logp.sum()
-            (grad_z,) = torch.autograd.grad(s, z, retain_graph=False, create_graph=False)
-        return grad_z.detach()
+            x = x.detach().requires_grad_(True)
+            log_ei = log_ei_mod(x.unsqueeze(1))
+            if log_ei.dim() > 1:
+                log_ei = log_ei.sum(dim=tuple(range(1, log_ei.dim())))
+            s = log_ei.sum()
+            (grad_x,) = torch.autograd.grad(s, x, retain_graph=False, create_graph=False)
 
-    return cond_fn_gp
+        return grad_x.detach()
+
+    return cond_fn_log_ei
 
 
 # TODO: find dataloader that works across systems
@@ -219,7 +219,8 @@ for i, batch in enumerate(dataloader):
         max_score = batch_max_score.item()
         best_z = batch_z[batch_max_idx].detach().clone()
 
-    if (i + 1) - NUM_INIT_ITERS in SURR_ITERS:
+    iter = (i + 1) - NUM_INIT_ITERS
+    if iter in SURR_ITERS:
         best_f = torch.tensor(max_score, device=model.device, dtype=torch.float32)
 
         lb = torch.full_like(best_z, -3)
@@ -228,16 +229,15 @@ for i, batch in enumerate(dataloader):
 
         sampler = SobolQMCNormalSampler(sample_shape=torch.Size([128]))
         log_qEI = qLogExpectedImprovement(model=surrogate_model.cuda(), best_f=best_f, sampler=sampler)
-        qEI = qExpectedImprovement(model=surrogate_model.cuda(), best_f=best_f, sampler=sampler)
         torch.cuda.empty_cache()
 
         for batch_size in ACQ_BATCH_SIZES:
-            print(f"processing (iter: {i + 1}, bsz: {batch_size})")
+            print(f"processing (iter: {iter}, bsz: {batch_size})")
 
-            summary[f"(iter: {i + 1}, bsz: {batch_size})"] = evaluate_on_batch(
+            summary[f"(iter: {iter}, bsz: {batch_size})"] = evaluate_on_batch(
                 batch_size=batch_size,
                 diffusion_model=model,
-                cond_fn=cond_fn_gp_generator(log_qEI),
+                cond_fn=cond_fn_log_ei_generator(log_qEI),
                 log_qei=log_qEI,
                 bounds=bounds,
             )

@@ -38,8 +38,8 @@ model = DiffusionModel.load_from_checkpoint("./data/molecule_diffusion.ckpt")
 model.cuda()
 model.freeze()
 
-
-df = pl.read_csv("./data/guacamol_train_data_first_20k.txt").select("smile", "logp").head(10_000)
+# df = pl.read_csv("./data/guacamol/guacamol_train_data_first_20k.txt").select("smile", "logp").head(10_000)
+df = pl.read_csv("./data/guacamol/guacamol_train_data_first_20k.csv").select("smile", "logp").head(10_000)
 
 latents = []
 for subdf in df.iter_slices(4096):
@@ -109,7 +109,7 @@ with torch.no_grad():
 logei_optim_z, _ = optimize_acqf(
     acq_function=log_ei_mod,
     bounds=torch.vstack(
-        [torch.full_like(train_x.min(0).values, -6.0), torch.full_like(train_x.max(0).values, 6.0)],
+        [torch.full_like(train_x.min(0).values, -3.0), torch.full_like(train_x.max(0).values, 3.0)],
     ),
     q=N,
     num_restarts=10,

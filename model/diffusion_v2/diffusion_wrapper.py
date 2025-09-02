@@ -11,8 +11,6 @@ from tqdm.auto import tqdm
 from model.diffusion_v2.GaussianDiffusion import GaussianDiffusion1D, PredType, Unet1D, extract
 from model.diffusion_v2.vae import BaseVAE
 
-torch.set_float32_matmul_precision("medium")
-
 
 class DiffusionModel(L.LightningModule):
     def __init__(

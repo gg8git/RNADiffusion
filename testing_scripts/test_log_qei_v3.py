@@ -11,6 +11,8 @@ from tqdm import tqdm
 from model import GPModelDKL
 from model.diffusion_v2 import DiffusionModel
 
+torch.set_float32_matmul_precision("highest")
+
 torch.set_printoptions(sci_mode=False, precision=3, linewidth=120)
 RDLogger.DisableLog("rdApp.*")  # type: ignore
 
@@ -75,7 +77,7 @@ log_ei_mod = qLogExpectedImprovement(
 def cond_fn_log_ei(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     with torch.enable_grad():
         x = x.detach().requires_grad_(True)
-        log_ei = log_ei_mod(x.unsqueeze(1))
+        log_ei = log_ei_mod(x)
         if log_ei.dim() > 1:
             log_ei = log_ei.sum(dim=tuple(range(1, log_ei.dim())))
         s = log_ei.sum()
@@ -84,7 +86,7 @@ def cond_fn_log_ei(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     return grad_x.detach()
 
 
-N = 256
+N = 10
 
 logei_guide_z = model.ddim_sample(
     batch_size=N,
@@ -93,18 +95,18 @@ logei_guide_z = model.ddim_sample(
     cond_fn=cond_fn_log_ei,
 )
 with torch.no_grad():
-    logei_guide_z_pred = log_ei_mod(logei_guide_z.unsqueeze(1))
+    logei_guide_z_pred = log_ei_mod(logei_guide_z)
 
 logei_rand_z = torch.randn_like(logei_guide_z)
 with torch.no_grad():
-    logei_rand_z_pred = log_ei_mod(logei_rand_z.unsqueeze(1))
+    logei_rand_z_pred = log_ei_mod(logei_rand_z)
 
 logei_ddim_z = model.ddim_sample(
     batch_size=N,
     sampling_steps=50,
 )
 with torch.no_grad():
-    logei_ddim_z_pred = log_ei_mod(logei_ddim_z.unsqueeze(1))
+    logei_ddim_z_pred = log_ei_mod(logei_ddim_z)
 
 logei_optim_z, _ = optimize_acqf(
     acq_function=log_ei_mod,
@@ -116,13 +118,13 @@ logei_optim_z, _ = optimize_acqf(
     raw_samples=256,
 )
 with torch.no_grad():
-    logei_optim_z_pred = log_ei_mod(logei_optim_z.unsqueeze(1))
+    logei_optim_z_pred = log_ei_mod(logei_optim_z)
 
 print("=== Individual Evals ===")
-print(f"DDIM guided samples:   {logei_guide_z_pred.mean():.3f} ± {logei_guide_z_pred.std():.3f}")
-print(f"DDIM unguided samples: {logei_ddim_z_pred.mean():.3f} ± {logei_ddim_z_pred.std():.3f}")
-print(f"Random samples:        {logei_rand_z_pred.mean():.3f} ± {logei_rand_z_pred.std():.3f}")
-print(f"Optimized samples:     {logei_optim_z_pred.mean():.3f} ± {logei_optim_z_pred.std():.3f}")
+print(f"DDIM guided samples:   {logei_guide_z_pred.item():.3f}")
+print(f"DDIM unguided samples: {logei_ddim_z_pred.item():.3f}")
+print(f"Random samples:        {logei_rand_z_pred.item():.3f}")
+print(f"Optimized samples:     {logei_optim_z_pred.item():.3f}")
 
 print("=== Batch (qEI) Evals ===")
 print(f"DDIM guided samples:   {log_ei_mod(logei_guide_z).detach().cpu().item():.3f}")

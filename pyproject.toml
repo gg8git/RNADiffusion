@@ -11,6 +11,7 @@ dependencies = [
     "fcd>=1.2.2",
     "fire>=0.7.1",
     "gpytorch>=1.14",
+    "guacamol",
     "hnn-utils>=0.3.10",
     "ipykernel>=6.30.1",
     "ipywidgets>=8.1.7",
@@ -26,6 +27,7 @@ dependencies = [
 
 [tool.uv.sources]
 torch = { index = "pytorch" }
+guacamol = { git = "https://github.com/haydn-jones/guacamol" }
 
 [[tool.uv.index]]
 name = "pytorch"

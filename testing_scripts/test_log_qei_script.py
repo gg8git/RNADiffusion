@@ -352,7 +352,7 @@ def validate_with_gp(diffusion, mode="pdop", batch_sizes=[64], surr_iters=[16], 
 
 def main():
     diffusion = load_diffusion_model(load_model_checkpoint="SELFIES_Diffusion/oflvuzyp/checkpoints/last.ckpt")
-    validate_with_gp(diffusion=diffusion, mode="pdop", batch_sizes=[4, 16, 64, 256], surr_iters = [4, 16, 64], log_path=f"results/log_{int(time.time() * 1000)}.json")
+    validate_with_gp(diffusion=diffusion, mode="pdop", batch_sizes=[4, 16, 64, 128, 256], surr_iters = [1, 4, 16, 64, 256], log_path=f"results/log_{int(time.time() * 1000)}.json")
 
 if __name__ == "__main__":
     main()

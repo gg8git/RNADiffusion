@@ -280,7 +280,9 @@ def validate_with_gp(diffusion, mode="pdop", batch_sizes=[64], surr_iters=[16], 
     )
 
     batch = next(iter(dm.train_dataloader())) # [b,128]
-    inducing_z = batch[0].cuda().to(device)
+    batch = batch[0] if isinstance(batch, list) else batch
+    inducing_z = batch.cuda().to(device)
+    import ipdb; ipdb.set_trace()
 
     surrogate_model = GPModelDKL(inducing_z.reshape(data_batch_size, -1), likelihood=gpytorch.likelihoods.GaussianLikelihood().cuda()).cuda()
     surrogate_mll = PredictiveLogLikelihood(surrogate_model.likelihood, surrogate_model, num_data=data_batch_size)
@@ -350,7 +352,7 @@ def validate_with_gp(diffusion, mode="pdop", batch_sizes=[64], surr_iters=[16], 
 
 def main():
     diffusion = load_diffusion_model(load_model_checkpoint="SELFIES_Diffusion/oflvuzyp/checkpoints/last.ckpt")
-    validate_with_gp(diffusion=diffusion, mode="qed", batch_sizes=[4, 16, 64, 256], surr_iters = [4, 16, 64], log_path=f"results/log_{int(time.time() * 1000)}.json")
+    validate_with_gp(diffusion=diffusion, mode="pdop", batch_sizes=[4, 16, 64, 256], surr_iters = [4, 16, 64], log_path=f"results/log_{int(time.time() * 1000)}.json")
 
 if __name__ == "__main__":
     main()

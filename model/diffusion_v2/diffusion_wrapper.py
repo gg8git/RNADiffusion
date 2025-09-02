@@ -44,7 +44,7 @@ class DiffusionModel(L.LightningModule):
             objective=pred_type,
         )
 
-    @torch.compile
+    # @torch.compile
     def _train_forward(self, seq: Tensor) -> Tensor:
         x_start = seq.reshape(seq.shape[0], self.n_bn, self.d_bn)
 

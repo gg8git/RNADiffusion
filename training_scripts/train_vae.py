@@ -26,7 +26,8 @@ class Wrapper(L.LightningModule):
             self.save_hyperparameters(asdict(config))
 
         self.config = config
-        self.model: RNAVAE = torch.compile(RNAVAE(config))
+        # self.model: RNAVAE = torch.compile(RNAVAE(config))
+        self.model: RNAVAE = RNAVAE(config)
 
     def forward(self, z):
         return self.model.decoder(z)

@@ -326,7 +326,7 @@ class Unet1D(Module):
         self.channels = in_dim
         self.self_condition = True
 
-    @torch.compile
+    # @torch.compile
     def forward(self, x: Tensor, time: Tensor, x_self_cond: Tensor | None = None):
         if x_self_cond is None:
             x_self_cond = torch.zeros_like(x)

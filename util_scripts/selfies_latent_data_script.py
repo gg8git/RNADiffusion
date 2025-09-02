@@ -41,7 +41,10 @@ with torch.no_grad():
     mus_tensor = torch.stack(mus).squeeze(1)
     sigmas_tensor = torch.stack(sigmas).squeeze(1)
 
-    output_path = Path("data/selfies/selfies_flat") / f"low_all_{split}.pt"
+    output_dir = Path("data/selfies/selfies_flat")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_dir / f"low_all_{split}.pt"
     torch.save((mus_tensor, sigmas_tensor), output_path)
 
     print(f"Saved {len(mus_tensor)} encodings to {output_path}")

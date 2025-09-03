@@ -3,8 +3,8 @@ import selfies as sf
 import torch
 
 from utils.guacamol_utils import GUACAMOL_TASK_NAMES, smiles_to_desired_scores
-from datamodules.selfies_lolbo_datamodule import SELFIESDataset, collate_fn
-from model.mol_vae_lolbo.mol_vae import InfoTransformerVAE
+from datamodules.selfies_datamodule import SELFIESDataset
+from model.mol_vae_model.BaseMolVAE import BaseVAE
 
 
 class MoleculeObjective:
@@ -14,7 +14,7 @@ class MoleculeObjective:
     def __init__(
         self,
         task_id="pdop",
-        path_to_vae_statedict="../lolbo/utils/mol_utils/selfies_vae/state_dict/SELFIES-VAE-state-dict.pt",
+        path_to_vae_statedict="checkpoints/SELFIES_VAE/epoch=447-step=139328.ckpt",
         xs_to_scores_dict={},
         max_string_length=1024,
         num_calls=0,
@@ -22,7 +22,7 @@ class MoleculeObjective:
     ):
         assert task_id in GUACAMOL_TASK_NAMES + ["logp"]
 
-        self.dim = 256  # SELFIES VAE DEFAULT LATENT SPACE DIM
+        self.dim = 128  # SELFIES VAE DEFAULT LATENT SPACE DIM
         self.path_to_vae_statedict = path_to_vae_statedict  # path to trained vae stat dict
         self.max_string_length = max_string_length  # max string length that VAE can generate
         self.smiles_to_selfies = smiles_to_selfies  # dict to hold computed mappings form smiles to selfies strings
@@ -99,7 +99,7 @@ class MoleculeObjective:
         self.vae = self.vae.eval()
         self.vae = self.vae.cuda()
         # sample molecular string form VAE decoder
-        sample = self.vae.sample(z=z.reshape(-1, 2, 128))
+        sample = self.vae.sample(z=z.reshape(-1, self.vae.n_acc, self.vae.d_bnk))
         # grab decoded selfies strings
         decoded_selfies = [self.dataobj.decode(sample[i]) for i in range(sample.size(-2))]
         # decode selfies strings to smiles strings (SMILES is needed format for oracle)
@@ -130,11 +130,21 @@ class MoleculeObjective:
         sets self.dataobj to the corresponding data class
         used to tokenize inputs, etc."""
         self.dataobj = SELFIESDataset()
-        self.vae = InfoTransformerVAE(dataset=self.dataobj)
+        self.vae = BaseVAE(
+            self.dataobj.vocab2idx,
+            d_bnk=16,
+            n_acc=8,
+            d_dec=64,
+            decoder_num_layers=3,
+            decoder_dim_ff=256,
+            d_enc=256,
+            encoder_dim_ff=512,
+            encoder_num_layers=3,
+        )
         # load in state dict of trained model:
         if self.path_to_vae_statedict:
             state_dict = torch.load(self.path_to_vae_statedict)
-            self.vae.load_state_dict(state_dict, strict=True)
+            self.vae.custom_load_state_dict(state_dict, strict=True)
         self.vae = self.vae.cuda()
         self.vae = self.vae.eval()
         # set max string length that VAE can generate
@@ -162,7 +172,7 @@ class MoleculeObjective:
             tokenized_selfie = self.dataobj.tokenize_selfies([selfie])[0]
             encoded_selfie = self.dataobj.encode(tokenized_selfie).unsqueeze(0)
             X_list.append(encoded_selfie)
-        X = collate_fn(X_list)
+        X = self.dataobj.get_collate_fn()(X_list)
         dict = self.vae(X.cuda())
         vae_loss, z = dict["loss"], dict["z"]
         z = z.reshape(-1, self.dim)

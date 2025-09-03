@@ -21,9 +21,8 @@ try:
 except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
-# from lolbo.objective import MoleculeObjective
-from data.guacamol_utils import compute_train_zs, load_molecule_train_data
-from lolbo.objective_lolbo import MoleculeObjective
+from lolbo import MoleculeObjective, MoleculeObjectiveV2
+from utils.guacamol_utils import compute_train_zs, load_molecule_train_data
 
 
 class Optimize:
@@ -68,7 +67,8 @@ class Optimize:
         update_e2e: bool = True,
         k: int = 1_000,
         verbose: bool = True,
-        path_to_vae_statedict: str = "checkpoints/SELFIES_VAE_LOLBO/SELFIES-VAE-state-dict.pt",
+        use_vae_v2: bool = False,
+        path_to_vae_statedict: str = "data/molecule_vae.ckpt",
         max_string_length: int = 1024,
     ):
         self.path_to_vae_statedict = path_to_vae_statedict
@@ -103,8 +103,8 @@ class Optimize:
         #   must define self.init_train_x, self.init_train_y, and self.init_train_z
         self.load_train_data()
         # initialize latent space objective (self.objective) for particular task
-        self.initialize_objective()
-        assert isinstance(self.objective, MoleculeObjective), "self.objective must be an instance of MoleculeObjective"
+        self.initialize_objective(use_vae_v2)
+        assert isinstance(self.objective, MoleculeObjective) or isinstance(self.objective, MoleculeObjectiveV2), "self.objective must be an instance of MoleculeObjective or MoleculeObjectiveV2"
         assert type(self.init_train_x) is list, "load_train_data() must set self.init_train_x to a list of xs"
         assert torch.is_tensor(self.init_train_y), "load_train_data() must set self.init_train_y to a tensor of ys"
         assert torch.is_tensor(self.init_train_z), "load_train_data() must set self.init_train_z to a tensor of zs"
@@ -138,21 +138,38 @@ class Optimize:
         self.method_args["molopt"] = locals()
         del self.method_args["molopt"]["self"]
 
-    def initialize_objective(self):
-        # initialize molecule objective
-        self.objective = MoleculeObjective(
-            task_id=self.task_id,
-            path_to_vae_statedict=self.path_to_vae_statedict,
-            max_string_length=self.max_string_length,
-            smiles_to_selfies=self.init_smiles_to_selfies,
-        )
-        # if train zs have not been pre-computed for particular vae, compute them
-        #   by passing initialization selfies through vae
-        if self.init_train_z is None:
-            self.init_train_z = compute_train_zs(
-                self.objective,
-                self.init_train_x,
+    def initialize_objective(self, use_vae_v2=False):
+        if use_vae_v2:
+            # initialize molecule objective
+            self.objective = MoleculeObjectiveV2(
+                task_id=self.task_id,
+                path_to_vae_statedict=self.path_to_vae_statedict,
+                max_string_length=self.max_string_length,
+                smiles_to_selfies=self.init_smiles_to_selfies,
             )
+            # if train zs have not been pre-computed for particular vae, compute them
+            #   by passing initialization selfies through vae
+            if self.init_train_z is None:
+                self.init_train_z = compute_train_zs(
+                    self.objective,
+                    self.init_train_x,
+                )
+
+        else:
+            # initialize molecule objective
+            self.objective = MoleculeObjective(
+                task_id=self.task_id,
+                path_to_vae_statedict=self.path_to_vae_statedict,
+                max_string_length=self.max_string_length,
+                smiles_to_selfies=self.init_smiles_to_selfies,
+            )
+            # if train zs have not been pre-computed for particular vae, compute them
+            #   by passing initialization selfies through vae
+            if self.init_train_z is None:
+                self.init_train_z = compute_train_zs(
+                    self.objective,
+                    self.init_train_x,
+                )
 
         return self
 
@@ -302,4 +319,4 @@ def new(**kwargs):
 if __name__ == "__main__":
     fire.Fire(Optimize)
 
-# python3 diff_bo.py --task_id pdop --num_initialization_points 500 --max_n_oracle_calls 10000 --k 10 - run_lolbo - done
+# python3 diff_bo.py --task_id pdop --num_initialization_points 500 --max_n_oracle_calls 10000 --k 10 --use_vae_v2 True - run_lolbo - done

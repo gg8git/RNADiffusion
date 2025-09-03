@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass
 
 import torch
-from botorch.acquisition import qExpectedImprovement
+from botorch.acquisition import qExpectedImprovement, qLogExpectedImprovement
 from botorch.generation import MaxPosteriorSampling
 from botorch.optim import optimize_acqf
 from torch.quasirandom import SobolEngine
@@ -114,31 +114,29 @@ def generate_batch(
     if acqf == "ddim":
         assert diffusion is not None
 
-        ei = qExpectedImprovement(model.cuda(), Y.max().cuda())
-
-        def neg_qei(z, t):
-            z = z.transpose(1, 2).reshape(batch_size, 2, -1).reshape(batch_size, -1)
-            return -1 * ei(z)
-
-        shape = (batch_size, diffusion.channels, diffusion.seq_length)
-        latents = diffusion.ddim_sample(
-            shape,
-            class_labels=None,
-            cond_fn=neg_qei,
-            bounds=torch.stack([tr_lb, tr_ub]).cuda(),
-            grad_scale=10.0,
-            eta=0.1,
-        )
-        X_next = latents.transpose(1, 2).reshape(batch_size, 2, -1).reshape(batch_size, -1)
-
-        X_next_ei, _ = optimize_acqf(
-            ei,
-            bounds=torch.stack([tr_lb, tr_ub]).cuda(),
-            q=batch_size,
-            num_restarts=num_restarts,
-            raw_samples=raw_samples,
+        log_ei_mod = qLogExpectedImprovement(
+            model=model.cuda(),  # type: ignore
+            best_f=Y.max().cuda(),
         )
 
-        print(f"ddim ei: {ei(X_next)}, ei ei: {ei(X_next_ei)}")
+        def cond_fn_log_ei(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            with torch.enable_grad():
+                x = x.detach().requires_grad_(True)
+                log_ei = log_ei_mod(x)
+                if log_ei.dim() > 1:
+                    log_ei = log_ei.sum(dim=tuple(range(1, log_ei.dim())))
+                s = log_ei.sum()
+                (grad_x,) = torch.autograd.grad(s, x, retain_graph=False, create_graph=False)
+
+            return grad_x.detach()
+
+        X_next = model.ddim_sample(
+            batch_size=batch_size,
+            sampling_steps=50,
+            guidance_scale=1.0,
+            cond_fn=cond_fn_log_ei,
+        )
+
+        # print(f"ddim ei: {ei(X_next)}")
 
     return X_next

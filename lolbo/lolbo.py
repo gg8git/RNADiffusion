@@ -4,12 +4,11 @@ import gpytorch
 import lightning as L
 import torch
 from gpytorch.mlls import PredictiveLogLikelihood
-from RNADiffusion.model.GaussianDiffusion_deprecated import GaussianDiffusion1D
 
 from lolbo.turbo import TurboState, generate_batch, update_state
 from lolbo.utils import update_models_end_to_end, update_surr_model
-from model.surrogate_model.ppgpr import GPModelDKL
-from model.UNet1D import KarrasUnet1D
+from model import GPModelDKL
+from model.diffusion_v2 import DiffusionModel
 
 
 class LOLBOState:
@@ -99,44 +98,9 @@ class LOLBOState:
         return self
 
     def initialize_diffusion_model(self):
-        class Wrapper(L.LightningModule):
-            def __init__(self):
-                super().__init__()
-                model = KarrasUnet1D(
-                    seq_len=8,
-                    dim=64,
-                    dim_max=128,
-                    channels=32,
-                    num_downsamples=3,
-                    attn_res=(32, 16, 8),
-                    attn_dim_head=32,
-                )
-
-                self.diffusion = GaussianDiffusion1D(
-                    model,
-                    seq_length=8,
-                    timesteps=1000,
-                    objective="pred_noise",
-                )
-
-            def forward(self, z):
-                return self.diffusion(z)
-
-            def training_step(self, batch, batch_idx):
-                batch = batch.reshape(-1, 8, 32).transpose(1, 2)
-                loss = self.forward(batch)
-                self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
-                return loss
-
-            def configure_optimizers(self):
-                return torch.optim.Adam(self.diffusion.parameters(), lr=3e-4)
-
-        model = Wrapper()
-
-        ckpt = torch.load("SELFIES_Diffusion/jj934sg6/checkpoints/last.ckpt", map_location="cpu")
-        model.load_state_dict(ckpt["state_dict"])
-        self.diffusion = model.diffusion
+        self.diffusion = DiffusionModel.load_from_checkpoint("./data/molecule_diffusion.ckpt")
         self.diffusion.eval().cuda()
+        self.diffusion.freeze()
 
         return self
 

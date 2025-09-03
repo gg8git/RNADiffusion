@@ -2,19 +2,18 @@ import numpy as np
 import selfies as sf
 import torch
 
-from data.guacamol_utils import GUACAMOL_TASK_NAMES, smiles_to_desired_scores
-from data.selfies_dataset_lolbo import SELFIESDataset, collate_fn
-from model.mol_vae_lolbo.mol_vae import InfoTransformerVAE
+from utils.guacamol_utils import GUACAMOL_TASK_NAMES, smiles_to_desired_scores
+from model.diffusion_v2 import BaseVAE
 
 
-class MoleculeObjective:
+class MoleculeObjectiveV2:
     """MoleculeObjective class supports all molecule optimization
     tasks and uses the SELFIES VAE by default"""
 
     def __init__(
         self,
         task_id="pdop",
-        path_to_vae_statedict="../lolbo/utils/mol_utils/selfies_vae/state_dict/SELFIES-VAE-state-dict.pt",
+        path_to_vae_statedict="data/molecule_vae.ckpt",
         xs_to_scores_dict={},
         max_string_length=1024,
         num_calls=0,
@@ -22,7 +21,7 @@ class MoleculeObjective:
     ):
         assert task_id in GUACAMOL_TASK_NAMES + ["logp"]
 
-        self.dim = 256  # SELFIES VAE DEFAULT LATENT SPACE DIM
+        self.dim = 128
         self.path_to_vae_statedict = path_to_vae_statedict  # path to trained vae stat dict
         self.max_string_length = max_string_length  # max string length that VAE can generate
         self.smiles_to_selfies = smiles_to_selfies  # dict to hold computed mappings form smiles to selfies strings
@@ -98,17 +97,9 @@ class MoleculeObjective:
         z = z.cuda()
         self.vae = self.vae.eval()
         self.vae = self.vae.cuda()
-        # sample molecular string form VAE decoder
-        sample = self.vae.sample(z=z.reshape(-1, 2, 128))
-        # grab decoded selfies strings
-        decoded_selfies = [self.dataobj.decode(sample[i]) for i in range(sample.size(-2))]
-        # decode selfies strings to smiles strings (SMILES is needed format for oracle)
-        decoded_smiles = []
-        for selfie in decoded_selfies:
-            smile = sf.decoder(selfie)
-            decoded_smiles.append(smile)
-            # save smile to selfie mapping to map back later if needed
-            self.smiles_to_selfies[smile] = selfie
+
+        tokens = self.vae.sample(z)
+        decoded_smiles = self.vae.detokenize(tokens)
 
         return decoded_smiles
 
@@ -129,12 +120,8 @@ class MoleculeObjective:
         """Sets self.vae to the desired pretrained vae and
         sets self.dataobj to the corresponding data class
         used to tokenize inputs, etc."""
-        self.dataobj = SELFIESDataset()
-        self.vae = InfoTransformerVAE(dataset=self.dataobj)
-        # load in state dict of trained model:
-        if self.path_to_vae_statedict:
-            state_dict = torch.load(self.path_to_vae_statedict)
-            self.vae.load_state_dict(state_dict, strict=True)
+        self.dataobj = None
+        self.vae = BaseVAE.load_from_checkpoint(self.path_to_vae_statedict)
         self.vae = self.vae.cuda()
         self.vae = self.vae.eval()
         # set max string length that VAE can generate
@@ -151,28 +138,14 @@ class MoleculeObjective:
                 (ie reconstruction error)
         """
         # assumes xs_batch is a batch of smiles strings
-        X_list = []
-        for smile in xs_batch:
-            try:
-                # avoid re-computing mapping from smiles to selfies to save time
-                selfie = self.smiles_to_selfies[smile]
-            except:
-                selfie = sf.encoder(smile)
-                self.smiles_to_selfies[smile] = selfie
-            tokenized_selfie = self.dataobj.tokenize_selfies([selfie])[0]
-            encoded_selfie = self.dataobj.encode(tokenized_selfie).unsqueeze(0)
-            X_list.append(encoded_selfie)
-        X = collate_fn(X_list)
-        dict = self.vae(X.cuda())
-        vae_loss, z = dict["loss"], dict["z"]
-        z = z.reshape(-1, self.dim)
-
-        return z, vae_loss
+        tokens = self.vae.tokenize(xs_batch)
+        out_dict = self.vae(tokens.cuda())
+        return out_dict['z'].flatten(1), out_dict['loss']
 
 
 if __name__ == "__main__":
     # testing molecule objective
-    obj1 = MoleculeObjective(task_id="pdop")
+    obj1 = MoleculeObjectiveV2(task_id="pdop")
     print(obj1.num_calls)
     dict1 = obj1(torch.randn(10, 256))
     print(dict1["scores"], obj1.num_calls)

@@ -130,7 +130,7 @@ def generate_batch(
 
             return grad_x.detach()
 
-        X_next = model.ddim_sample(
+        X_next = diffusion.ddim_sample(
             batch_size=batch_size,
             sampling_steps=50,
             guidance_scale=1.0,

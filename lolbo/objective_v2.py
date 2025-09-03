@@ -98,7 +98,7 @@ class MoleculeObjectiveV2:
         self.vae = self.vae.eval()
         self.vae = self.vae.cuda()
 
-        tokens = self.vae.sample(z)
+        tokens = self.vae.sample(z, argmax=False)
         decoded_smiles = self.vae.detokenize(tokens)
 
         return decoded_smiles

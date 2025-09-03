@@ -214,7 +214,7 @@ def cond_fn_bounds_hinge(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     return grad_x.detach()
 
 def cond_fn_joint(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    return 0.1 * cond_fn_log_ei(x, t) + 1.9 * cond_fn_bounds_hinge(x, t)
+    return 0.05 * cond_fn_log_ei(x, t) + 9.95 * cond_fn_bounds_hinge(x, t)
 
 
 N = 10

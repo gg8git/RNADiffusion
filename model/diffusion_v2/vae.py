@@ -234,9 +234,22 @@ class BaseVAE(pl.LightningModule):
         else:
             raise ValueError(f"Unknown model type: {self.model_type}")
 
-        enc = [[self.vocab[s] for s in s_tok] for s_tok in tokens]
-        enc = [[self.start_tok] + e + [self.stop_tok] for e in enc]
-
+        # Original code: 
+        # enc = [[self.vocab[s] for s in s_tok] for s_tok in tokens]
+        # enc = [[self.start_tok] + e + [self.stop_tok] for e in enc]
+        # Updated to handle KeyErrors (e.g., KeyError: '[=NH1]') when doing self.vocab[s]. 
+        enc = []
+        for s_tok in tokens:
+            encoded_s_tok = [self.start_tok]
+            for s in s_tok:
+                try:
+                    encoded_s_tok.append(self.vocab[s])
+                except KeyError:
+                    # if selfies token s is not in vocab, skip token 
+                    pass 
+            encoded_s_tok.append(self.stop_tok)
+            enc.append(encoded_s_tok)
+        
         enc = [torch.tensor(e) for e in enc]
         enc = pad_sequence(enc, batch_first=True, padding_value=self.pad_tok).to(device=self.device, dtype=torch.long)
 

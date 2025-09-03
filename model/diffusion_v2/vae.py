@@ -245,8 +245,9 @@ class BaseVAE(pl.LightningModule):
                 try:
                     encoded_s_tok.append(self.vocab[s])
                 except KeyError:
-                    # if selfies token s is not in vocab, skip token 
-                    pass 
+                    encoded_s_tok.append(self.pad_tok)
+                    # if selfies token s is not in vocab, replace with pad token
+                    # pass (Skiping cuased "RuntimeError" in pad_sequence below "received an empty list of sequences")
             encoded_s_tok.append(self.stop_tok)
             enc.append(encoded_s_tok)
         

@@ -244,9 +244,11 @@ class LOLBOState:
             out_dict = self.objective(z_next)
             x_next = out_dict["decoded_xs"]
             y_next = out_dict["scores"]
-            z_next, _ = self.objective.vae_forward(x_next)  # edited zs
-            if self.minimize:
-                y_next = y_next * -1
+            if len(y_next) != 0:
+                # don't try to forward empty list (if we decoded nothing valid)
+                z_next, _ = self.objective.vae_forward(x_next)  # edited zs
+                if self.minimize:
+                    y_next = y_next * -1
         print(f"best score: {y_next.max()}")
         # 3. Add new evaluated points to dataset (update_next)
         if len(y_next) != 0:

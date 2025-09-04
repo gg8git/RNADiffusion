@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from model import GPModelDKL
-from model.diffusion_v2 import DiffusionModel
+from model.diffusion_v2 import DiffusionModel, DiffusionModelExtended
 
 torch.set_float32_matmul_precision("highest")
 
@@ -36,7 +36,7 @@ def update_surr_model(surr_model, mll, learning_rte, train_z, train_y, n_epochs)
     return surr_model
 
 
-model = DiffusionModel.load_from_checkpoint("./data/molecule_diffusion.ckpt")
+model = DiffusionModelExtended.load_from_checkpoint("./data/molecule_diffusion.ckpt")
 model.cuda()
 model.freeze()
 
@@ -88,16 +88,34 @@ def cond_fn_log_ei(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
 
 N = 10
 
-logei_guide_z = model.ddim_sample(
+logei_ddim_guide_z = model.ddim_sample(
     batch_size=N,
     sampling_steps=50,
     guidance_scale=1.0,
     cond_fn=cond_fn_log_ei,
 )
 with torch.no_grad():
-    logei_guide_z_pred = log_ei_mod(logei_guide_z)
+    logei_ddim_guide_z_pred = log_ei_mod(logei_ddim_guide_z)
 
-logei_rand_z = torch.randn_like(logei_guide_z)
+logei_dpmpp2m_guide_z = model.dpmpp2m_sample(
+    batch_size=N,
+    sampling_steps=50,
+    guidance_scale=1.0,
+    cond_fn=cond_fn_log_ei,
+)
+with torch.no_grad():
+    logei_dpmpp2m_guide_z_pred = log_ei_mod(logei_dpmpp2m_guide_z)
+
+logei_dpmpp2msde_guide_z = model.dpmpp2msde_sample(
+    batch_size=N,
+    sampling_steps=50,
+    guidance_scale=1.0,
+    cond_fn=cond_fn_log_ei,
+)
+with torch.no_grad():
+    logei_dpmpp2msde_guide_z_pred = log_ei_mod(logei_dpmpp2msde_guide_z)
+
+logei_rand_z = torch.randn_like(logei_ddim_guide_z)
 with torch.no_grad():
     logei_rand_z_pred = log_ei_mod(logei_rand_z)
 
@@ -121,7 +139,9 @@ with torch.no_grad():
     logei_optim_z_pred = log_ei_mod(logei_optim_z)
 
 print("=== Individual Evals ===")
-print(f"DDIM guided samples:   {logei_guide_z_pred.item():.3f}")
-print(f"DDIM unguided samples: {logei_ddim_z_pred.item():.3f}")
-print(f"Random samples:        {logei_rand_z_pred.item():.3f}")
-print(f"Optimized samples:     {logei_optim_z_pred.item():.3f}")
+print(f"DDIM guided samples:       {logei_ddim_guide_z_pred.item():.3f}")
+print(f"DPMPP2M guided samples:    {logei_dpmpp2m_guide_z_pred.item():.3f}")
+print(f"DPMPP2MSDE guided samples: {logei_dpmpp2msde_guide_z_pred.item():.3f}")
+print(f"DDIM unguided samples:     {logei_ddim_z_pred.item():.3f}")
+print(f"Random samples:            {logei_rand_z_pred.item():.3f}")
+print(f"Optimized samples:         {logei_optim_z_pred.item():.3f}")

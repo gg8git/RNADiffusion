@@ -42,7 +42,7 @@ class LOLBOState:
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
         self.verbose = verbose
 
-        assert acq_func in ["ei", "ts", "ddim"]
+        assert acq_func in ["ei", "ts", "ddim", "ddim_repaint"]
         if minimize:
             self.train_y = self.train_y * -1
 

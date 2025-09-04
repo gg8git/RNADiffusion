@@ -196,9 +196,9 @@ class DiffusionModel(L.LightningModule):
         time_pairs = list(zip(times[:-1], times[1:]))
 
         x_t = torch.randn((B, self.n_bn, self.d_bn), device=device)
+        x_known = x_known.reshape(B, self.n_bn, self.d_bn).to(device)
+        mask = mask.reshape(B, self.n_bn, self.d_bn).to(device)
         x_start = None
-
-        mask = mask if mask.shape == x_t.shape else mask.expand_as(x_t)
 
         for t, t_next in tqdm(time_pairs, desc="DDIM RePaint", leave=False):
             t_vec = torch.full((B,), t, device=device, dtype=torch.long)

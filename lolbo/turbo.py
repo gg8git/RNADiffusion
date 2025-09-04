@@ -63,7 +63,6 @@ def generate_batch(
     dtype=torch.float32,
     device=torch.device("cuda"),
 ):
-    assert acqf in ("ts", "ei", "ddim")
     assert torch.all(torch.isfinite(Y))
     if n_candidates is None:
         n_candidates = min(5000, max(2000, 200 * X.shape[-1]))
@@ -137,6 +136,33 @@ def generate_batch(
             cond_fn=cond_fn_log_ei,
         )
 
-        # print(f"ddim ei: {ei(X_next)}")
+    if acqf == "ddim_repaint":
+        repaint_candidates = 128
+
+        dim = X.shape[-1]
+        tr_lb = tr_lb.cuda()
+        tr_ub = tr_ub.cuda()
+        sobol = SobolEngine(dim, scramble=True)
+        pert = sobol.draw(repaint_candidates).to(dtype=dtype).cuda()
+        pert = tr_lb + (tr_ub - tr_lb) * pert
+        tr_lb = tr_lb.cuda()
+        tr_ub = tr_ub.cuda()
+        # Create a perturbation mask
+        prob_perturb = min(20.0 / dim, 1.0)
+        mask = torch.rand(repaint_candidates, dim, dtype=dtype, device=device) <= prob_perturb
+        ind = torch.where(mask.sum(dim=1) == 0)[0]
+        mask[ind, torch.randint(0, dim - 1, size=(len(ind),), device=device)] = 1
+        mask = (~mask.cuda()).float()
+
+        X_cand = x_center.expand(repaint_candidates, dim).clone()
+
+        X_cand = diffusion.ddim_repaint(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+        )
+        thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)
+        X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size)
 
     return X_next

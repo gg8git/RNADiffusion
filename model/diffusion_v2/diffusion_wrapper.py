@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from einops import reduce
 from torch import Tensor
+from torch.distributions import Normal
 from tqdm.auto import tqdm
 
 from model.diffusion_v2.GaussianDiffusion import GaussianDiffusion1D, PredType, Unet1D, extract
@@ -169,6 +170,167 @@ class DiffusionModel(L.LightningModule):
 
         return x_t.flatten(1)
 
+    @torch.no_grad()
+    def ddim_repaint(
+        self,
+        x_known: Tensor,
+        mask: Tensor,
+        sampling_steps: int = 50,
+        u_steps: int = 20,
+    ) -> Tensor:
+        """
+        Re-painting with DDIM: https://arxiv.org/abs/2201.09865
+        A mask value of 1 indicates the value is known and should be preserved.
+        """
+        device = self.device
+        assert self.diffusion.objective == "pred_v", (
+            f"This DDIM sampler only supports pred_v, not {self.diffusion.objective}"
+        )
+        assert u_steps >= 1, "u_steps must be at least 1"
+
+        B = x_known.shape[0]
+
+        # schedule: [T-1, ... 0, -1]
+        times = torch.linspace(-1, self.diffusion.num_timesteps - 1, steps=sampling_steps + 1)
+        times = list(reversed(times.long().tolist()))
+        time_pairs = list(zip(times[:-1], times[1:]))
+
+        x_t = torch.randn((B, self.n_bn, self.d_bn), device=device)
+        x_start = None
+
+        mask = mask if mask.shape == x_t.shape else mask.expand_as(x_t)
+
+        for t, t_next in tqdm(time_pairs, desc="DDIM RePaint", leave=False):
+            t_vec = torch.full((B,), t, device=device, dtype=torch.long)
+            t_next_vec = torch.full((B,), t_next, device=device, dtype=torch.long)
+
+            for ustep in range(u_steps):
+                # 1) predict v_t
+                with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                    v_hat = self.diffusion.model(
+                        x=x_t,
+                        time=t_vec,
+                        x_self_cond=x_start if self.diffusion.self_condition else None,
+                    ).float()
+
+                # v -> x0_hat, eps_hat
+                alpha_bar_t = extract(self.diffusion.alphas_cumprod, t_vec, x_t.shape)
+                A_t = alpha_bar_t.sqrt()
+                B_t = (1.0 - alpha_bar_t).sqrt()
+
+                x0_hat = A_t * x_t - B_t * v_hat
+                eps_hat = B_t * x_t + A_t * v_hat
+                x_start = x0_hat
+
+                if t_next < 0:  # final snap enforce known region
+                    x_t = mask * x_known + (1.0 - mask) * x0_hat
+                    break
+
+                # 2) DDIM (eta=0): t -> t_next
+                alpha_bar_next = extract(self.diffusion.alphas_cumprod, t_next_vec, x_t.shape)
+                x_t_unk = alpha_bar_next.sqrt() * x0_hat + (1.0 - alpha_bar_next).sqrt() * eps_hat
+
+                # 3) RePaint mix at t_next
+                x_t_knw = self.diffusion.q_sample(x_known, t=t_next_vec, noise=torch.randn_like(x_t) * (t_next > 0))
+
+                x_tm1 = (1.0 - mask) * x_t_unk + mask * x_t_knw
+
+                # 4) If more inner loops forward re-noise x_{t_next} -> x_t
+                if ustep < u_steps - 1:
+                    ratio = (alpha_bar_t / alpha_bar_next).clamp(min=0.0, max=1.0)
+                    _z = torch.randn_like(x_tm1) if t > 0 else torch.zeros_like(x_tm1)
+                    x_t = ratio.sqrt() * x_tm1 + (1.0 - ratio).sqrt() * _z
+                else:
+                    x_t = x_tm1
+
+        return x_t.flatten(1)
+
+    @torch.no_grad()
+    def ddim_sample_tr(
+        self,
+        batch_size: int,
+        sampling_steps: int = 50,
+        guidance_scale: float = 1.0,
+        cond_fn: Callable | None = None,
+        tr_center: Tensor | None = None,
+        tr_halfwidth: float | Tensor | None = None,
+    ) -> torch.Tensor:
+        device = self.device
+        assert self.diffusion.objective == "pred_v", (
+            f"This DDIM sampler only supports pred_v, not {self.diffusion.objective}"
+        )
+        if tr_center is not None:
+            tr_center = tr_center.reshape(1, self.n_bn, self.d_bn).to(device)
+
+        # time schedule: [T-1, ... 1, 0, -1]
+        times = torch.linspace(-1, self.diffusion.num_timesteps - 1, steps=sampling_steps + 1)
+        times = list(reversed(times.long().tolist()))
+        time_pairs = list(zip(times[:-1], times[1:]))
+
+        x_t = torch.randn((batch_size, self.n_bn, self.d_bn), device=device)
+        x_start = None
+        for t, t_next in tqdm(time_pairs, desc="DDIM Sampling", leave=False):
+            t_vec = torch.full((batch_size,), t, device=device, dtype=torch.long)
+
+            # 1) predict v_t
+            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                v_hat = self.diffusion.model(
+                    x=x_t,
+                    time=t_vec,
+                    x_self_cond=x_start if self.diffusion.self_condition else None,
+                ).float()
+
+            alpha_bar_t = extract(self.diffusion.alphas_cumprod, t_vec, x_t.shape)
+            A = alpha_bar_t.sqrt()
+            B = (1.0 - alpha_bar_t).sqrt()
+
+            if cond_fn is not None:
+                _x0_hat = A * x_t - B * v_hat
+
+                grad = cond_fn(_x0_hat.flatten(1), t_vec)
+
+                grad = grad.reshape(x_t.shape)
+                grad = clip_max_grad(grad, 6 * math.sqrt(self.n_bn * self.d_bn))  # Keep gradient in [-6, 6] ball
+
+                v_hat = v_hat - B * grad * guidance_scale
+
+            x0_hat = A * x_t - B * v_hat
+            eps_hat = B * x_t + A * v_hat
+
+            if t_next < 0:
+                x_t = x0_hat
+                continue
+
+            # 6) DDIM update (eta=0): x_{t_next} = sqrt(abar_{t_next}) * x0_hat + sqrt(1-abar_{t_next}) * eps_hat
+            t_next_vec = torch.full((batch_size,), t_next, device=device, dtype=torch.long)
+            alpha_bar_next = extract(self.diffusion.alphas_cumprod, t_next_vec, x_t.shape)
+
+            x_t = alpha_bar_next.sqrt() * x0_hat + (1.0 - alpha_bar_next).sqrt() * eps_hat
+            x_start = x0_hat
+
+            if tr_center is not None and tr_halfwidth is not None:
+                # Interpolate between a half-width of 6 at t=T to the given half-width at t=0
+                interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
+                hw_t = tr_halfwidth * (1 - interpolant) + 6.0 * interpolant
+
+                lower_t = tr_center - hw_t
+                upper_t = tr_center + hw_t
+                # x_t = x_t.clamp(min=lower_t, max=upper_t)
+                eps = 1e-3
+                x_t = tr_center + (hw_t - eps) * torch.tanh((x_t - tr_center) / (hw_t - eps))
+
+                on_boundary = ((x_t - lower_t).abs() < 1e-5) | ((x_t - upper_t).abs() < 1e-5)
+                avg = on_boundary.flatten(1).float().sum(dim=1).mean()
+                tqdm.write(f"t={t}, hw_t={hw_t:.3f} | {avg:.3f} / {x_t.flatten(1).shape[1]} on boundary")
+
+        # Finally, clamp
+        if tr_center is not None and tr_halfwidth is not None:
+            lower_0 = tr_center - tr_halfwidth
+            upper_0 = tr_center + tr_halfwidth
+            x_t = x_t.clamp(min=lower_0, max=upper_0)
+
+        return x_t.flatten(1)
+
 
 def clip_max_grad(x: Tensor, max_norm: float) -> Tensor:
     shape = x.shape
@@ -185,3 +347,62 @@ def calc_minmax(x: Tensor) -> tuple[float, float]:
     x_min = x.min().item()
     x_max = x.max().item()
     return x_min, x_max
+
+
+def diffusion_box_bounds_forward(
+    lower0: torch.Tensor,
+    upper0: torch.Tensor,
+    t: torch.Tensor,
+    q_sample_dist: Callable,
+    joint_coverage: float = 0.99,
+):
+    d = lower0.numel()
+    _, std = q_sample_dist(lower0, t=t)
+    sigma_t = std
+    alpha_bar_t = 1.0 - sigma_t**2
+    alpha_sqrt = torch.sqrt(alpha_bar_t)
+    p_1d = joint_coverage ** (1.0 / d)
+    z = Normal(0, 1).icdf(torch.tensor((1.0 + p_1d) / 2.0, device=lower0.device))
+    lower_t = alpha_sqrt * lower0 - z * sigma_t
+    upper_t = alpha_sqrt * upper0 + z * sigma_t
+    return lower_t, upper_t
+
+
+def trust_region_bounds_from_center(
+    center0: torch.Tensor,
+    halfwidth: torch.Tensor | float,
+    t: torch.Tensor,
+    q_sample_dist: Callable,
+    joint_coverage: float = 0.99,
+):
+    center0 = center0.detach()
+    halfwidth = torch.as_tensor(halfwidth, device=center0.device, dtype=center0.dtype).expand_as(center0)
+    mean_t, std_t = q_sample_dist(center0, t=t)
+    sigma_t = std_t
+    alpha_sqrt = torch.sqrt(torch.clamp(1.0 - sigma_t**2, min=0.0))
+
+    d = center0.numel()
+    p_1d = joint_coverage ** (1.0 / d)
+    z = Normal(0, 1).icdf(torch.tensor((1.0 + p_1d) / 2.0, device=center0.device, dtype=center0.dtype))
+
+    m_t = mean_t
+    h_t = alpha_sqrt * halfwidth + z * sigma_t
+
+    lower_t = m_t - h_t
+    upper_t = m_t + h_t
+    return lower_t, upper_t, m_t, h_t
+
+
+def cond_fn_trust(
+    x_t: torch.Tensor,
+    t: torch.Tensor,
+    center: torch.Tensor,
+    hw_t: torch.Tensor,
+    margin_frac: float = 0.05,
+    lam: float = 1.0,
+):
+    delta = x_t - center
+    slack = hw_t - delta.abs()
+    margin = (margin_frac * hw_t).clamp(min=1e-3)
+    g = (margin - slack).clamp(min=0.0) * torch.sign(center - x_t)
+    return lam * g

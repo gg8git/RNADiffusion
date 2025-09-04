@@ -204,6 +204,11 @@ class GaussianDiffusion1D(L.LightningModule):
 
         return img
 
+    def q_sample_dist(self, x_start: Tensor, t: Tensor) -> tuple[Tensor, Tensor]:
+        mean = extract(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
+        std = extract(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
+        return mean, std
+
     def q_sample(self, x_start: Tensor, t: Tensor, noise: Tensor | None = None) -> Tensor:
         noise = default(noise, lambda: torch.randn_like(x_start))
 

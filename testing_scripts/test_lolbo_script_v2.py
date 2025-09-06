@@ -21,7 +21,7 @@ try:
 except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
-from lolbo import MoleculeObjective, MoleculeObjectiveV2, PeptideObjective
+from lolbo import MoleculeObjective, MoleculeObjectiveV2, PeptideObjective, PeptideObjectiveV2
 from datamodules.selfies_datamodule import compute_molecule_train_zs, load_molecule_train_data
 from datamodules.kmer_datamodule import compute_peptide_train_zs, load_peptide_train_data
 from utils.guacamol_utils import GUACAMOL_TASK_NAMES
@@ -124,7 +124,12 @@ class Optimize:
         # initialize latent space objective (self.objective) for particular task
         assert acq_func not in ["ddim", "ddim_repaint"] or use_vae_v2, "if acq_func is ddim or ddim_repaint, must use vae v2"
         self.initialize_objective(use_vae_v2)
-        assert isinstance(self.objective, MoleculeObjective) or isinstance(self.objective, MoleculeObjectiveV2), "self.objective must be an instance of MoleculeObjective or MoleculeObjectiveV2"
+        assert (
+            isinstance(self.objective, MoleculeObjective) or 
+            isinstance(self.objective, MoleculeObjectiveV2) or
+            isinstance(self.objective, PeptideObjective) or
+            isinstance(self.objective, PeptideObjectiveV2)
+        ), "self.objective must be an instance of MoleculeObjective or MoleculeObjectiveV2"
         assert type(self.init_train_x) is list, "load_train_data() must set self.init_train_x to a list of xs"
         assert torch.is_tensor(self.init_train_y), "load_train_data() must set self.init_train_y to a tensor of ys"
         assert torch.is_tensor(self.init_train_z), "load_train_data() must set self.init_train_z to a tensor of zs"
@@ -192,7 +197,7 @@ class Optimize:
             assert hasattr(self, "task_specific_args"), "molecule objective must have task specific args argument"
 
             if use_vae_v2:
-                self.objective = PeptideObjective(
+                self.objective = PeptideObjectiveV2(
                     task_id=self.task_id,
                     task_specific_args=self.task_specific_args,
                     max_string_length=self.max_string_length,

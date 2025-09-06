@@ -98,7 +98,11 @@ class LOLBOState:
         return self
 
     def initialize_diffusion_model(self):
-        self.diffusion = DiffusionModel.load_from_checkpoint("./data/molecule_diffusion.ckpt")
+        if "peptide" in str(self.objective).lower():
+            ckpt_path = "./data/peptide_diffusion.ckpt"
+        else:
+            ckpt_path = "./data/molecule_diffusion.ckpt"
+        self.diffusion = DiffusionModel.load_from_checkpoint(ckpt_path)
         self.diffusion.eval().cuda()
         self.diffusion.freeze()
 

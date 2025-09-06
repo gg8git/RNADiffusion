@@ -170,3 +170,5 @@ checkpoints
 .vscode
 uv.lock
 DiffuseOpt
+
+.DS_Store

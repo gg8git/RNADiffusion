@@ -328,7 +328,6 @@ class Optimize:
             )
 
             self.log_data_to_wandb_on_each_loop()
-            self.save_topk_results()
             # update models end to end when we fail to make
             #   progress e2e_freq times in a row (e2e_freq=10 by default)
             if (self.lolbo_state.progress_fails_since_last_e2e >= self.e2e_freq) and self.update_e2e:
@@ -342,11 +341,11 @@ class Optimize:
                 self.lolbo_state.initialize_tr_state()
             # if a new best has been found, print out new best input and score:
             if self.lolbo_state.new_best_found:
-                # self.save_topk_results() # save topk solutions found so far locally 
                 if self.verbose:
                     print("\nNew best found:")
                     self.print_progress_update()
                 self.lolbo_state.new_best_found = False
+            self.save_topk_results() # save topk solutions found so far locally on each step (in case we kill runs early)
 
         # if verbose, print final results
         if self.verbose:

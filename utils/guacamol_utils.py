@@ -290,7 +290,7 @@ import pandas as pd
 import torch
 
 
-def load_molecule_train_data(
+def load_train_data(
     task_id,
     path_to_vae_statedict,
     num_initialization_points=10_000,

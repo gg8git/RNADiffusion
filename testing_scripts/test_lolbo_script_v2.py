@@ -21,8 +21,10 @@ try:
 except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
-from lolbo import MoleculeObjective, MoleculeObjectiveV2
-from utils.guacamol_utils import compute_train_zs, load_molecule_train_data
+from lolbo import MoleculeObjective, MoleculeObjectiveV2, PeptideObjective
+from datamodules.selfies_datamodule import compute_molecule_train_zs, load_molecule_train_data
+from datamodules.kmer_datamodule import compute_peptide_train_zs, load_peptide_train_data
+from utils.guacamol_utils import GUACAMOL_TASK_NAMES
 
 
 class Optimize:
@@ -70,6 +72,12 @@ class Optimize:
         use_vae_v2: bool = False,
         path_to_vae_statedict: str = "data/molecule_vae.ckpt",
         max_string_length: int = 1024,
+
+        # add peptide task + constraints if needed
+        task_specific_args: list=[], # list of additional args to be passed into objective funcion 
+        constraint_function_ids: list=[], # list of strings identifying the black box constraint function to use
+        constraint_thresholds: list=[], # list of corresponding threshold values (floats)
+        constraint_types: list=[], # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
     ):
         self.path_to_vae_statedict = path_to_vae_statedict
         self.max_string_length = max_string_length
@@ -82,6 +90,7 @@ class Optimize:
         self.track_with_wandb = track_with_wandb
         self.wandb_entity = wandb_entity
         self.task_id = task_id
+        self.task = "molecule" if self.task_id in GUACAMOL_TASK_NAMES + ["logp"] else "peptide"
         self.max_n_oracle_calls = max_n_oracle_calls
         self.verbose = verbose
         self.num_initialization_points = num_initialization_points
@@ -98,11 +107,22 @@ class Optimize:
             assert self.wandb_entity, (
                 "Must specify a valid wandb account username (wandb_entity) to run with wandb tracking"
             )
+        
+        # handle peptide task + constraint args
+        if self.task == "peptide":
+            self.score_version = task_specific_args[0]
+            self.task_specific_args = task_specific_args
+        assert len(constraint_function_ids) == len(constraint_thresholds)
+        assert len(constraint_thresholds) == len(constraint_types)
+        self.constraint_function_ids = constraint_function_ids # list of strings identifying the black box constraint function to use
+        self.constraint_thresholds = constraint_thresholds # list of corresponding threshold values (floats)
+        self.constraint_types = constraint_types # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
 
         # initialize train data for particular task
         #   must define self.init_train_x, self.init_train_y, and self.init_train_z
         self.load_train_data()
         # initialize latent space objective (self.objective) for particular task
+        assert acq_func not in ["ddim", "ddim_repaint"] or use_vae_v2, "if acq_func is ddim or ddim_repaint, must use vae v2"
         self.initialize_objective(use_vae_v2)
         assert isinstance(self.objective, MoleculeObjective) or isinstance(self.objective, MoleculeObjectiveV2), "self.objective must be an instance of MoleculeObjective or MoleculeObjectiveV2"
         assert type(self.init_train_x) is list, "load_train_data() must set self.init_train_x to a list of xs"
@@ -139,34 +159,57 @@ class Optimize:
         del self.method_args["molopt"]["self"]
 
     def initialize_objective(self, use_vae_v2=False):
-        if use_vae_v2:
-            # initialize molecule objective
-            self.objective = MoleculeObjectiveV2(
-                task_id=self.task_id,
-                path_to_vae_statedict=self.path_to_vae_statedict,
-                max_string_length=self.max_string_length,
-                smiles_to_selfies=self.init_smiles_to_selfies,
-            )
+
+        if self.task == "molecule":
+            assert hasattr(self, "init_smiles_to_selfies"), "molecule objective must have init smiles to selfies function"
+
+            if use_vae_v2:
+                # initialize molecule objective
+                self.objective = MoleculeObjectiveV2(
+                    task_id=self.task_id,
+                    path_to_vae_statedict=self.path_to_vae_statedict,
+                    max_string_length=self.max_string_length,
+                    smiles_to_selfies=self.init_smiles_to_selfies,
+                )
+            else:
+                # initialize molecule objective
+                self.objective = MoleculeObjective(
+                    task_id=self.task_id,
+                    path_to_vae_statedict=self.path_to_vae_statedict,
+                    max_string_length=self.max_string_length,
+                    smiles_to_selfies=self.init_smiles_to_selfies,
+                )
+
             # if train zs have not been pre-computed for particular vae, compute them
             #   by passing initialization selfies through vae
             if self.init_train_z is None:
-                self.init_train_z = compute_train_zs(
+                self.init_train_z = compute_molecule_train_zs(
                     self.objective,
                     self.init_train_x,
                 )
 
-        else:
-            # initialize molecule objective
-            self.objective = MoleculeObjective(
-                task_id=self.task_id,
-                path_to_vae_statedict=self.path_to_vae_statedict,
-                max_string_length=self.max_string_length,
-                smiles_to_selfies=self.init_smiles_to_selfies,
-            )
+        elif self.task == "peptide":
+            assert hasattr(self, "task_specific_args"), "molecule objective must have task specific args argument"
+
+            if use_vae_v2:
+                self.objective = PeptideObjective(
+                    task_id=self.task_id,
+                    task_specific_args=self.task_specific_args,
+                    max_string_length=self.max_string_length,
+                    path_to_vae_statedict=self.path_to_vae_statedict,
+                )
+            else:
+                self.objective = PeptideObjective(
+                    task_id=self.task_id,
+                    task_specific_args=self.task_specific_args,
+                    max_string_length=self.max_string_length,
+                    path_to_vae_statedict=self.path_to_vae_statedict,
+                )
+
             # if train zs have not been pre-computed for particular vae, compute them
             #   by passing initialization selfies through vae
             if self.init_train_z is None:
-                self.init_train_z = compute_train_zs(
+                self.init_train_z = compute_peptide_train_zs(
                     self.objective,
                     self.init_train_x,
                 )
@@ -182,21 +225,32 @@ class Optimize:
             self.init_train_z (a tensor of corresponding latent space points)
         """
         assert self.num_initialization_points <= 20_000
-        smiles, selfies, zs, ys = load_molecule_train_data(
-            task_id=self.task_id,
-            num_initialization_points=self.num_initialization_points,
-            path_to_vae_statedict=self.path_to_vae_statedict,
-        )
-        self.init_train_x, self.init_train_z, self.init_train_y = smiles, zs, ys
-        if self.verbose:
-            print("Loaded initial training data")
-            print("train y shape:", self.init_train_y.shape)
-            print(f"train x list length: {len(self.init_train_x)}\n")
 
-        # create initial smiles to selfies dict
-        self.init_smiles_to_selfies = {}
-        for ix, smile in enumerate(self.init_train_x):
-            self.init_smiles_to_selfies[smile] = selfies[ix]
+        # fix this shit
+        
+        if self.task == "molecule":
+            smiles, selfies, zs, ys = load_molecule_train_data(
+                task_id=self.task_id,
+                num_initialization_points=self.num_initialization_points,
+                path_to_vae_statedict=self.path_to_vae_statedict,
+            )
+            self.init_train_x, self.init_train_z, self.init_train_y = smiles, zs, ys
+            if self.verbose:
+                print("Loaded initial training data")
+                print("train y shape:", self.init_train_y.shape)
+                print(f"train x list length: {len(self.init_train_x)}\n")
+
+            # create initial smiles to selfies dict
+            self.init_smiles_to_selfies = {}
+            for ix, smile in enumerate(self.init_train_x):
+                self.init_smiles_to_selfies[smile] = selfies[ix]
+        
+        elif self.task == "peptide":
+            self.init_train_x, self.init_train_z, self.init_train_y = load_peptide_train_data(
+                score_version=self.score_version,
+                num_initialization_points=self.num_initialization_points,
+                path_to_vae_statedict=self.path_to_vae_statedict,
+            )
 
         return self
 

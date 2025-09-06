@@ -5,7 +5,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from datamodules.selfies_lolbo_datamodule import SELFIESDataset
+from datamodules.selfies_datamodule import SELFIESDataset
 
 
 class PositionalEncoding(nn.Module):
@@ -25,7 +25,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class InfoTransformerVAE(pl.LightningModule):
+class MoleculeInfoTransformerVAE(pl.LightningModule):
     def __init__(
         self,
         dataset: SELFIESDataset,

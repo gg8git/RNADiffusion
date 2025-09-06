@@ -98,7 +98,7 @@ class MoleculeObjectiveV2:
         self.vae = self.vae.eval()
         self.vae = self.vae.cuda()
 
-        tokens = self.vae.sample(z, argmax=False)
+        tokens = self.vae.sample(z, argmax=False, max_len=self.max_string_length)
         decoded_smiles = self.vae.detokenize(tokens)
 
         return decoded_smiles
@@ -124,8 +124,6 @@ class MoleculeObjectiveV2:
         self.vae = BaseVAE.load_from_checkpoint(self.path_to_vae_statedict)
         self.vae = self.vae.cuda()
         self.vae = self.vae.eval()
-        # set max string length that VAE can generate
-        self.vae.max_string_length = self.max_string_length
 
     def vae_forward(self, xs_batch):
         """Input:

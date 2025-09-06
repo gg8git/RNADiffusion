@@ -18,7 +18,7 @@ class PeptideObjectiveV2:
         divf_id="edit_dist",
         path_to_vae_statedict="data/peptide_vae.ckpt",
         xs_to_scores_dict={},
-        max_string_length=50,
+        max_string_length=1024,
         num_calls=0,
         lb=None,
         ub=None,
@@ -118,7 +118,7 @@ class PeptideObjectiveV2:
         self.vae = self.vae.eval()
         self.vae = self.vae.cuda()
 
-        tokens = self.vae.sample(z, argmax=False)
+        tokens = self.vae.sample(z, argmax=False, max_len=self.max_string_length)
         decoded_seqs = self.vae.detokenize(tokens)
 
         return decoded_seqs
@@ -142,8 +142,6 @@ class PeptideObjectiveV2:
         self.vae = BaseVAE.load_from_checkpoint(self.path_to_vae_statedict)
         self.vae = self.vae.cuda()
         self.vae = self.vae.eval()
-        # set max string length that VAE can generate
-        self.vae.max_string_length = self.max_string_length
 
     def vae_forward(self, xs_batch):
         """Input:

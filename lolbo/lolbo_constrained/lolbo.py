@@ -449,6 +449,7 @@ class LOLBOStateConstrained:
             Y=self.train_y,
             batch_size=self.bsz, 
             acqf=self.acq_func,
+            diffusion=self.diffusion,
             absolute_bounds=(self.objective.lb, self.objective.ub),
             # considering constraints
             constraint_model_list=self.c_models,

@@ -4,6 +4,7 @@ import warnings
 import fire
 import numpy as np
 import torch
+import pandas as pd 
 
 warnings.filterwarnings("ignore")
 from rdkit import RDLogger
@@ -74,6 +75,7 @@ class Optimize:
         use_vae_v2: bool = False,
         path_to_vae_statedict: str = "data/molecule_vae.ckpt",
         max_string_length: int = 1024,
+        save_results_top_level_dir: str = "results/", # local directory where run data/results are saved 
 
         # add peptide task + constraints if needed
         task_specific_args: list=[], # list of additional args to be passed into objective funcion 
@@ -100,6 +102,7 @@ class Optimize:
         self.num_initialization_points = num_initialization_points
         self.e2e_freq = e2e_freq
         self.update_e2e = update_e2e
+        self.save_results_top_level_dir = save_results_top_level_dir
         self.set_seed()
         if wandb_project_name:  # if project name specified
             self.wandb_project_name = wandb_project_name
@@ -186,7 +189,21 @@ class Optimize:
         self.method_args["molopt"] = locals()
         del self.method_args["molopt"]["self"]
 
-    def initialize_objective(self, use_vae_v2=False, constrained=False):
+    def initialize_save_results_dir(self,):
+        save_dir = f"{self.save_results_top_level_dir}"
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
+        save_dir = save_dir + f"{self.task_id}/"
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
+        save_dir = save_dir + f"{self.wandb_run_name}/"
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
+        self.save_results_dir = save_dir
+        return self 
+
+
+    def initialize_objective(self, use_vae_v2=False):
 
         if self.task == "molecule":
             assert hasattr(self, "init_smiles_to_selfies"), "molecule objective must have init smiles to selfies function"
@@ -333,6 +350,8 @@ class Optimize:
         """Main optimization loop"""
         # creates wandb tracker iff self.track_with_wandb == True
         self.create_wandb_tracker()
+        # create directory to periodically save best sequences and scores found during opt: 
+        self.initialize_save_results_dir()
         # main optimization loop
         while self.lolbo_state.objective.num_calls < self.max_n_oracle_calls:
             print(
@@ -359,6 +378,7 @@ class Optimize:
                     print("\nNew best found:")
                     self.print_progress_update()
                 self.lolbo_state.new_best_found = False
+            self.save_topk_results() # save topk solutions found so far locally on each step (in case we kill runs early)
 
         # if verbose, print final results
         if self.verbose:
@@ -385,6 +405,18 @@ class Optimize:
 
         return self
 
+    def save_topk_results(self,):
+        ''' Save top k solutions found during optimization so far to CSV
+        ''' 
+        results_df = {
+            "top_k_scores":self.lolbo_state.top_k_scores,
+            "top_k_solutions":self.lolbo_state.top_k_xs,
+        }
+        results_df = pd.DataFrame.from_dict(results_df)
+        results_df.to_csv(f"{self.save_results_dir}top_k_solutions_found.csv", index=False)
+
+        return self 
+    
     def log_topk_table_wandb(self):
         """After optimization finishes, log
         top k inputs and scores found

@@ -1,2 +1,4 @@
 from .objective import PeptideObjective
 from .objective_v2 import PeptideObjectiveV2
+from .constrained_objective import ConstrainedPeptideObjective
+from .constrained_objective_v2 import ConstrainedPeptideObjectiveV2

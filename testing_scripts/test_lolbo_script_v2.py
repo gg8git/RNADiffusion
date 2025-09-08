@@ -13,6 +13,7 @@ import os
 
 os.environ["WANDB_SILENT"] = "True"
 from lolbo.lolbo import LOLBOState
+from lolbo.lolbo_constrained import LOLBOStateConstrained
 
 try:
     import wandb
@@ -21,7 +22,7 @@ try:
 except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
-from lolbo import MoleculeObjective, MoleculeObjectiveV2, PeptideObjective, PeptideObjectiveV2
+from lolbo import MoleculeObjective, MoleculeObjectiveV2, ConstrainedPeptideObjective, ConstrainedPeptideObjectiveV2
 from datamodules.selfies_datamodule import compute_molecule_train_zs, load_molecule_train_data
 from datamodules.kmer_datamodule import compute_peptide_train_zs, load_peptide_train_data
 from utils.guacamol_utils import GUACAMOL_TASK_NAMES
@@ -69,6 +70,7 @@ class Optimize:
         update_e2e: bool = True,
         k: int = 1_000,
         verbose: bool = True,
+        constrained: bool = False,
         use_vae_v2: bool = False,
         path_to_vae_statedict: str = "data/molecule_vae.ckpt",
         max_string_length: int = 1024,
@@ -81,6 +83,7 @@ class Optimize:
     ):
         self.path_to_vae_statedict = path_to_vae_statedict
         self.max_string_length = max_string_length
+        self.constrained = constrained
 
         # add all local args to method args dict to be logged by wandb
         self.method_args = {}
@@ -91,6 +94,7 @@ class Optimize:
         self.wandb_entity = wandb_entity
         self.task_id = task_id
         self.task = "molecule" if self.task_id in GUACAMOL_TASK_NAMES + ["logp"] else "peptide"
+        assert not (self.task != "peptide" and self.constrained), "constrained optimization can only be done for peptides"
         self.max_n_oracle_calls = max_n_oracle_calls
         self.verbose = verbose
         self.num_initialization_points = num_initialization_points
@@ -127,8 +131,8 @@ class Optimize:
         assert (
             isinstance(self.objective, MoleculeObjective) or 
             isinstance(self.objective, MoleculeObjectiveV2) or
-            isinstance(self.objective, PeptideObjective) or
-            isinstance(self.objective, PeptideObjectiveV2)
+            isinstance(self.objective, ConstrainedPeptideObjective) or
+            isinstance(self.objective, ConstrainedPeptideObjectiveV2)
         ), "self.objective must be an instance of MoleculeObjective or MoleculeObjectiveV2"
         assert type(self.init_train_x) is list, "load_train_data() must set self.init_train_x to a list of xs"
         assert torch.is_tensor(self.init_train_y), "load_train_data() must set self.init_train_y to a tensor of ys"
@@ -144,26 +148,43 @@ class Optimize:
         )
 
         # initialize lolbo state
-        self.lolbo_state = LOLBOState(
-            objective=self.objective,
-            train_x=self.init_train_x,
-            train_y=self.init_train_y,
-            train_z=self.init_train_z,
-            minimize=minimize,
-            k=k,
-            num_update_epochs=num_update_epochs,
-            init_n_epochs=init_n_update_epochs,
-            learning_rte=learning_rte,
-            bsz=bsz,
-            acq_func=acq_func,
-            verbose=verbose,
-        )
+        if self.constrained:
+            self.lolbo_state = LOLBOStateConstrained(
+                objective=self.objective,
+                train_x=self.init_train_x,
+                train_y=self.init_train_y,
+                train_z=self.init_train_z,
+                train_c=self.init_train_c,
+                minimize=minimize,
+                k=k,
+                num_update_epochs=num_update_epochs,
+                init_n_epochs=init_n_update_epochs,
+                learning_rte=learning_rte,
+                bsz=bsz,
+                acq_func=acq_func,
+                verbose=verbose,
+            )
+        else:
+            self.lolbo_state = LOLBOState(
+                objective=self.objective,
+                train_x=self.init_train_x,
+                train_y=self.init_train_y,
+                train_z=self.init_train_z,
+                minimize=minimize,
+                k=k,
+                num_update_epochs=num_update_epochs,
+                init_n_epochs=init_n_update_epochs,
+                learning_rte=learning_rte,
+                bsz=bsz,
+                acq_func=acq_func,
+                verbose=verbose,
+            )
 
         # add args to method args dict to be logged by wandb
         self.method_args["molopt"] = locals()
         del self.method_args["molopt"]["self"]
 
-    def initialize_objective(self, use_vae_v2=False):
+    def initialize_objective(self, use_vae_v2=False, constrained=False):
 
         if self.task == "molecule":
             assert hasattr(self, "init_smiles_to_selfies"), "molecule objective must have init smiles to selfies function"
@@ -195,20 +216,27 @@ class Optimize:
 
         elif self.task == "peptide":
             assert hasattr(self, "task_specific_args"), "molecule objective must have task specific args argument"
-
             if use_vae_v2:
-                self.objective = PeptideObjectiveV2(
+                self.objective = ConstrainedPeptideObjectiveV2(
                     task_id=self.task_id,
                     task_specific_args=self.task_specific_args,
                     max_string_length=self.max_string_length,
                     path_to_vae_statedict=self.path_to_vae_statedict,
+                    # constraints
+                    constraint_function_ids=self.constraint_function_ids, # list of strings identifying the black box constraint function to use
+                    constraint_thresholds=self.constraint_thresholds, # list of corresponding threshold values (floats)
+                    constraint_types=self.constraint_types, # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
                 )
             else:
-                self.objective = PeptideObjective(
+                self.objective = ConstrainedPeptideObjective(
                     task_id=self.task_id,
                     task_specific_args=self.task_specific_args,
                     max_string_length=self.max_string_length,
                     path_to_vae_statedict=self.path_to_vae_statedict,
+                    # constraints
+                    constraint_function_ids=self.constraint_function_ids, # list of strings identifying the black box constraint function to use
+                    constraint_thresholds=self.constraint_thresholds, # list of corresponding threshold values (floats)
+                    constraint_types=self.constraint_types, # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
                 )
 
             # if train zs have not been pre-computed for particular vae, compute them
@@ -218,6 +246,7 @@ class Optimize:
                     self.objective,
                     self.init_train_x,
                 )
+            self.init_train_c = self.objective.compute_constraints(self.init_train_x)
 
         return self
 
@@ -320,6 +349,8 @@ class Optimize:
             self.lolbo_state.acquisition()
             if self.lolbo_state.tr_state.restart_triggered:
                 self.lolbo_state.initialize_tr_state()
+            if self.constrained:
+                self.lolbo_state.recenter_trs()
             # if a new best has been found, print out new best input and score:
             if self.lolbo_state.new_best_found:
                 if self.verbose:

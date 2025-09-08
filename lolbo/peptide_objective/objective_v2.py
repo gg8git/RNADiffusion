@@ -4,12 +4,9 @@ import sys
 import random
 from .tasks.objective_functions import OBJECTIVE_FUNCTIONS_DICT 
 from .tasks.diversity_functions import DIVERSITY_FUNCTIONS_DICT 
-from .tasks.blackbox_constraints import CONSTRAINT_FUNCTIONS_DICT 
 from model.diffusion_v2 import BaseVAE
 
 class PeptideObjectiveV2:
-    '''Objective class supports all optimization tasks using the 
-        InfoTransformerVAE '''
 
     def __init__(
         self,
@@ -53,7 +50,7 @@ class PeptideObjectiveV2:
                 decoded_xs: option to pass in list of decoded xs for efficiency if the zs have already been decoded
             Output
                 out_dict['valid_zs'] = the zs which decoded to valid xs 
-                out_dict['valid_xs'] = an array of valid xs obtained from input zs
+                out_dict['decoded_xs'] = an array of valid xs obtained from input zs
                 out_dict['scores']: an array of valid scores obtained from input zs
         '''
         if type(z) is np.ndarray: 
@@ -66,7 +63,6 @@ class PeptideObjectiveV2:
         valid_zs = z[out_dict['bool_arr']] 
         out_dict['valid_zs'] = valid_zs
         # get valid constraint values for valid decoded xs
-        # out_dict['constr_vals'] = self.compute_constraints(out_dict['valid_xs'])
 
         return out_dict
     

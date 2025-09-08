@@ -5,8 +5,8 @@ import lightning as L
 import torch
 from gpytorch.mlls import PredictiveLogLikelihood
 
-from lolbo.turbo import TurboState, generate_batch, update_state
-from lolbo.utils import update_models_end_to_end, update_surr_model
+from .turbo import TurboState, generate_batch, update_state
+from .utils import update_models_end_to_end, update_surr_model
 from model import GPModelDKL
 from model.diffusion_v2 import DiffusionModel
 
@@ -159,7 +159,6 @@ class LOLBOState:
             train_z = self.train_z[-self.bsz :]
             train_y = self.train_y[-self.bsz :].squeeze(-1)
 
-        # import ipdb; ipdb.set_trace()
         self.model = update_surr_model(self.model, self.mll, self.learning_rte, train_z, train_y, n_epochs)
         self.initial_model_training_complete = True
 
@@ -172,7 +171,7 @@ class LOLBOState:
         new_ys = self.train_y[-self.bsz :].squeeze(-1).tolist()
         train_x = new_xs + self.top_k_xs
         train_y = torch.tensor(new_ys + self.top_k_scores).float()
-        # import ipdb; ipdb.set_trace()
+
         self.objective, self.model = update_models_end_to_end(
             train_x, train_y, self.objective, self.model, self.mll, self.learning_rte, self.num_update_epochs
         )

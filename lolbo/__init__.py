@@ -1,2 +1,2 @@
 from .molecule_objective import MoleculeObjective, MoleculeObjectiveV2
-from .peptide_objective import PeptideObjective, PeptideObjectiveV2
+from .peptide_objective import PeptideObjective, PeptideObjectiveV2, ConstrainedPeptideObjective, ConstrainedPeptideObjectiveV2

@@ -127,7 +127,10 @@ class APEXSimilarityConstraint(ConstraintFunction):
         threshold_type, # is the threshold a min allowed or max allowed value ?
     ):
         # setting the reference sequence to use for similarity constraint
-        self.refs = threshold_type
+        if isinstance(threshold_type, str):
+            self.refs = [threshold_type] 
+        else:
+            self.refs = threshold_type
 
         threshold_type = "min"
 
@@ -136,7 +139,7 @@ class APEXSimilarityConstraint(ConstraintFunction):
             threshold_value=threshold_value,
         )
 
-        print(f"Initializing with REFERENCE_SEQUENCE: {self.refs}")
+        print(f"Initializing with REFERENCE_SEQUENCES: {self.refs}")
     
     def query_black_box(self, x_list):
         if not type(x_list) == list:
@@ -156,7 +159,7 @@ class APEXSimilarityConstraint(ConstraintFunction):
         for x in x_list:
             max_similarity = get_max_similarity(x)
             similarities.append(max_similarity)
-
+        
         return torch.tensor(similarities).float()
 
 CONSTRAINT_FUNCTIONS_DICT = {}

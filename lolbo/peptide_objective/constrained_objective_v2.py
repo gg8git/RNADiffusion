@@ -2,36 +2,21 @@ import numpy as np
 import torch 
 import sys 
 import random
-from datamodules.kmer_datamodule import DataModuleKmers, collate_fn
-from model.pep_vae_lolbo.pep_vae import PeptideInfoTransformerVAE
 from .tasks.objective_functions import OBJECTIVE_FUNCTIONS_DICT 
 from .tasks.diversity_functions import DIVERSITY_FUNCTIONS_DICT 
 from .tasks.blackbox_constraints import CONSTRAINT_FUNCTIONS_DICT 
+from model.diffusion_v2 import BaseVAE
 
-from .constants import (
-    PATH_TO_VAE_STATE_DICT,
-    ALL_AMINO_ACIDS,
-    ENCODER_DIM,
-    DECODER_DIM,
-    KL_FACTOR,
-    ENCODER_NUM_LAYERS,
-    DECODER_NUM_LAYERS,
-)
-import math 
-
-class ConstrainedPeptideObjective:
-    '''Objective class supports all optimization tasks using the 
-        InfoTransformerVAE '''
+class ConstrainedPeptideObjectiveV2:
 
     def __init__(
         self,
         task_id='example', # id of objective funciton you want to maximize 
         task_specific_args=[],
         divf_id="edit_dist",
-        path_to_vae_statedict=PATH_TO_VAE_STATE_DICT,
-        dim=256,
+        path_to_vae_statedict="data/peptide_vae.ckpt",
         xs_to_scores_dict={},
-        max_string_length=50,
+        max_string_length=1024,
         num_calls=0,
         lb=None,
         ub=None,
@@ -39,7 +24,7 @@ class ConstrainedPeptideObjective:
         constraint_thresholds=[], # list of corresponding threshold values (floats)
         constraint_types=[], # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
     ):
-        self.dim                    = dim # SELFIES VAE DEFAULT LATENT SPACE DIM
+        self.dim                    = 256
         self.path_to_vae_statedict  = path_to_vae_statedict # path to trained vae stat dict
         self.task_specific_args     = task_specific_args
         self.max_string_length      = max_string_length # max string length that VAE can generate
@@ -63,8 +48,6 @@ class ConstrainedPeptideObjective:
         # string id for optimization task, often used by oracle
         #   to differentiate between similar tasks (ie for guacamol)
         self.task_id = task_id
-        # latent dimension of vaae
-        self.dim = dim
         # absolute upper and lower bounds on search space
         self.lb = lb
         self.ub = ub  
@@ -90,7 +73,7 @@ class ConstrainedPeptideObjective:
             decoded_xs = self.vae_decode(z)
 
         out_dict = self.xs_to_valid_scores(decoded_xs)
-        valid_zs = z[out_dict['bool_arr']] 
+        valid_zs = z[out_dict['bool_arr']]
         out_dict['valid_zs'] = valid_zs
         # get valid constraint values for valid decoded xs
         out_dict['constr_vals'] = self.compute_constraints(out_dict['decoded_xs'])
@@ -133,22 +116,23 @@ class ConstrainedPeptideObjective:
         return out_dict
 
     def vae_decode(self, z):
-        '''Input
-                z: a tensor latent space points
-            Output
-                a corresponding list of the decoded input space 
-                items output by vae decoder 
-        '''
-        if type(z) is np.ndarray: 
+        """Input
+            z: a tensor latent space points
+        Output
+            a corresponding list of the decoded input space
+            items output by vae decoder
+        """
+        if type(z) is np.ndarray:
             z = torch.from_numpy(z).float()
         z = z.cuda()
         self.vae = self.vae.eval()
         self.vae = self.vae.cuda()
-        # sample peptide string form VAE decoder
-        # import pdb; pdb.set_trace()
-        sample = self.vae.sample(z=z.reshape(-1, 2, self.dim//2))
-        # grab decoded aa strings
-        decoded_seqs = [self.dataobj.decode(sample[i]) for i in range(sample.size(-2))]
+
+        tokens = self.vae.sample(z, argmax=False, max_len=self.max_string_length)
+        decoded_seqs = self.vae.detokenize(tokens)
+
+        if len(self.constraint_functions) == 0:
+            return decoded_seqs 
 
         # get rid of X's (deletion)
         temp = [] 
@@ -177,55 +161,25 @@ class ConstrainedPeptideObjective:
         ''' Sets self.vae to the desired pretrained vae and 
             sets self.dataobj to the corresponding data class 
             used to tokenize inputs, etc. '''
-        data_module = DataModuleKmers(
-            batch_size=10,
-            k=1,
-            load_data=False,
-        )
-        self.dataobj = data_module.train
-        self.vae = PeptideInfoTransformerVAE(
-            dataset=self.dataobj, 
-            d_model=self.dim//2,
-            kl_factor=KL_FACTOR,
-            encoder_dim_feedforward=ENCODER_DIM,
-            decoder_dim_feedforward=DECODER_DIM,
-            encoder_num_layers=ENCODER_NUM_LAYERS,
-            decoder_num_layers=DECODER_NUM_LAYERS,
-        ) 
-
-        # load in state dict of trained model:
-        if self.path_to_vae_statedict:
-            state_dict = torch.load(self.path_to_vae_statedict)
-            self.vae.load_state_dict(state_dict, strict=True) 
+        self.dataobj = None
+        self.vae = BaseVAE.load_from_checkpoint(self.path_to_vae_statedict)
         self.vae = self.vae.cuda()
         self.vae = self.vae.eval()
 
-        # set max string length that VAE can generate
-        self.vae.max_string_length = self.max_string_length
-        # make sure max string length is set correctly
-        print("max string length: ", self.vae.max_string_length)
-        # flush
-        sys.stdout.flush()
-
     def vae_forward(self, xs_batch):
-        ''' Input: 
-                a list xs 
-            Output: 
-                z: tensor of resultant latent space codes 
-                    obtained by passing the xs through the encoder
-                vae_loss: the total loss of a full forward pass
-                    of the batch of xs through the vae 
-                    (ie reconstruction error)
-        '''
-        # assumes xs_batch is a batch of smiles strings 
-        tokenized_seqs = self.dataobj.tokenize_sequence(xs_batch)
-        encoded_seqs = [self.dataobj.encode(seq).unsqueeze(0) for seq in tokenized_seqs]
-        X = collate_fn(encoded_seqs)
-        dict = self.vae(X.cuda())
-        vae_loss, z = dict['loss'], dict['z']
-        z = z.reshape(-1,self.dim)
-
-        return z, vae_loss
+        """Input:
+            a list xs
+        Output:
+            z: tensor of resultant latent space codes
+                obtained by passing the xs through the encoder
+            vae_loss: the total loss of a full forward pass
+                of the batch of xs through the vae
+                (ie reconstruction error)
+        """
+        # assumes xs_batch is a batch of smiles strings
+        tokens = self.vae.tokenize(xs_batch)
+        out_dict = self.vae(tokens.cuda())
+        return out_dict['z'].flatten(1), out_dict['loss']
 
 
     def divf(self, x1, x2):

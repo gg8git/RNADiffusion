@@ -6,7 +6,6 @@ from datamodules.kmer_datamodule import DataModuleKmers, collate_fn
 from model.pep_vae_lolbo.pep_vae import PeptideInfoTransformerVAE
 from .tasks.objective_functions import OBJECTIVE_FUNCTIONS_DICT 
 from .tasks.diversity_functions import DIVERSITY_FUNCTIONS_DICT 
-from .tasks.blackbox_constraints import CONSTRAINT_FUNCTIONS_DICT 
 
 from .constants import (
     PATH_TO_VAE_STATE_DICT,
@@ -68,7 +67,7 @@ class PeptideObjective:
                 decoded_xs: option to pass in list of decoded xs for efficiency if the zs have already been decoded
             Output
                 out_dict['valid_zs'] = the zs which decoded to valid xs 
-                out_dict['valid_xs'] = an array of valid xs obtained from input zs
+                out_dict['decoded_xs'] = an array of valid xs obtained from input zs
                 out_dict['scores']: an array of valid scores obtained from input zs
         '''
         if type(z) is np.ndarray: 
@@ -81,7 +80,6 @@ class PeptideObjective:
         valid_zs = z[out_dict['bool_arr']] 
         out_dict['valid_zs'] = valid_zs
         # get valid constraint values for valid decoded xs
-        out_dict['constr_vals'] = self.compute_constraints(out_dict['valid_xs'])
 
         return out_dict
     
@@ -203,6 +201,7 @@ class PeptideObjective:
         z = z.reshape(-1,self.dim)
 
         return z, vae_loss
+
 
     def divf(self, x1, x2):
         ''' Compute diversity function between two 

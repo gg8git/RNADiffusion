@@ -163,6 +163,7 @@ class Optimize:
                 bsz=bsz,
                 acq_func=acq_func,
                 verbose=verbose,
+                task=self.task,
             )
         else:
             self.lolbo_state = LOLBOState(
@@ -178,6 +179,7 @@ class Optimize:
                 bsz=bsz,
                 acq_func=acq_func,
                 verbose=verbose,
+                task=self.task,
             )
 
         # add args to method args dict to be logged by wandb

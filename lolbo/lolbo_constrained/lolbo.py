@@ -29,6 +29,7 @@ class LOLBOStateConstrained:
         bsz=10,
         acq_func='ts',
         verbose=True,
+        task="molecule"
     ):
 
         self.objective          = objective         # Objective with vae and associated diversity function for particular task
@@ -44,6 +45,7 @@ class LOLBOStateConstrained:
         self.bsz                = bsz               # acquisition batch size
         self.acq_func           = acq_func          # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
         self.verbose            = verbose
+        self.task               = task
 
         assert acq_func == "ts"
         if minimize:

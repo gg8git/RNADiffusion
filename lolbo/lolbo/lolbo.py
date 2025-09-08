@@ -26,6 +26,7 @@ class LOLBOState:
         bsz=10,
         acq_func="ts",
         verbose=True,
+        task="molecule",
     ):
         self.objective = objective  # objective with vae for particular task
         self.train_x = train_x  # initial train x data
@@ -41,6 +42,7 @@ class LOLBOState:
         self.bsz = bsz  # acquisition batch size
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
         self.verbose = verbose
+        self.task = task
 
         assert acq_func in ["ei", "ts", "ddim", "ddim_repaint"]
         if minimize:
@@ -98,11 +100,17 @@ class LOLBOState:
         return self
 
     def initialize_diffusion_model(self):
-        self.diffusion = DiffusionModel.load_from_checkpoint("./data/molecule_diffusion.ckpt")
+        if self.task == "molecule":
+            ckpt_path = "./data/molecule_diffusion.ckpt"
+        elif self.task == "peptide":
+            ckpt_path = "./data/peptide_diffusion.ckpt"
+        else:
+            self.diffusion = None
+            return self
+        
+        self.diffusion = DiffusionModel.load_from_checkpoint(ckpt_path)
         self.diffusion.eval().cuda()
         self.diffusion.freeze()
-
-        return self
 
     def update_next(self, z_next_, y_next_, x_next_, acquisition=False):
         """Add new points (z_next, y_next, x_next) to train data

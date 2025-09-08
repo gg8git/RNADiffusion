@@ -9,6 +9,7 @@ from .update_models_utils import (
     update_models_end_to_end_with_constraints,
 )
 from model.surrogate_model import GPModelDKL
+from model.diffusion_v2 import DiffusionModel
 import time
 import math
 
@@ -47,7 +48,7 @@ class LOLBOStateConstrained:
         self.verbose            = verbose
         self.task               = task
 
-        assert acq_func == "ts"
+        assert acq_func in ["ts", "ei", "ddim", "ddim_repaint"]
         if minimize:
             self.train_y = self.train_y * -1
 
@@ -65,65 +66,11 @@ class LOLBOStateConstrained:
         self.tot_num_e2e_updates           = 0
         self.initialize_top_k() # only track top k for LOL-BO, unnessary for regular opt 
 
+        self.initialize_diffusion_model()
+
     def search_space_data(self):
         return self.train_z
-
-    def initialize_xs_to_scores_dict(self,):
-        # put initial xs and ys in dict to be tracked by objective
-        init_xs_to_scores_dict = {}
-        for idx, x in enumerate(self.train_x):
-            init_xs_to_scores_dict[x] = self.train_y.squeeze()[idx].item()
-        self.objective.xs_to_scores_dict = init_xs_to_scores_dict
-
-    def initialize_tr_state(self):
-        self.tr_state = TurboStateConstrained( # initialize turbo state
-            dim=self.objective.dim,
-            batch_size=self.bsz, 
-            center_point=None,
-            # best_value=None, ## TODO: make sure this is right
-            # best_constraint_values=best_constraint_values, ## TODO: make sure this is right
-        )
-        
-        self.recenter_trs()
-        return self
-
-    def recenter_trs(self):
-        _, top_t_idxs = torch.topk(self.train_y.squeeze(), len(self.train_y))
-        train_y_idx_num = 0
-
-        while True: 
-            # if we run out of feasible points in dataset
-            if train_y_idx_num >= len(self.train_y): 
-                # Randomly sample a new feasible point (rare occurance)
-                print('Randomly sample feasible center during recenter trs')
-                center_x, center_point, center_score = self.randomly_sample_feasible_center() 
-                break
-            # otherwise, finding highest scoring feassible point in remaining dataset for tr center
-            center_idx = top_t_idxs[train_y_idx_num]
-            center_score = self.train_y[center_idx].item()
-            center_point = self.search_space_data()[center_idx] 
-            center_x = self.train_x[center_idx]
-            train_y_idx_num += 1
-            if self.is_feasible(center_x):
-                break 
-
-        self.tr_state.center_point = center_point
-        self.tr_state.best_value = center_score
-        self.tr_state.best_x = center_x 
-
-    # def restart_tr_as_needed(self):
-    #     if self.tr_state.restart_triggered:
-    #         new_state = TurboStateConstrained( 
-    #             dim=self.objective.dim,
-    #             batch_size=self.bsz, 
-    #             center_point=self.tr_state.center_point,
-    #             best_value=self.tr_state.best_value,
-    #             best_x=self.tr_state.best_x,
-    #         )
-    #         self.tr_state = new_state
-        
-    #     return self
-
+    
     def initialize_constraint_surrogates(self):
         self.c_models = []
         self.c_mlls = []
@@ -154,96 +101,24 @@ class LOLBOStateConstrained:
 
         return self
 
-    def update_surrogate_model(self): 
-        if not self.initial_model_training_complete:
-            # first time training surr model --> train on all data
-            n_epochs = self.init_n_epochs
-            X = self.search_space_data() # this is just self.train_x
-            Y = self.train_y.squeeze(-1)
-            # considering constraints
-            train_c = self.train_c
-        else:
-            # otherwise, only train on most recent batch of data
-            n_epochs = self.num_update_epochs
-            X = self.search_space_data()[-self.num_new_points:]
-            Y = self.train_y[-self.num_new_points:].squeeze(-1)
-            # considering constraints
-            if self.train_c is not None:
-                train_c = self.train_c[-self.num_new_points:]
-            else:
-                train_c = None 
-            
-        self.model = update_surr_model(
-            self.model,
-            self.mll,
-            self.learning_rte,
-            X,
-            Y,
-            n_epochs
+    def initialize_xs_to_scores_dict(self,):
+        # put initial xs and ys in dict to be tracked by objective
+        init_xs_to_scores_dict = {}
+        for idx, x in enumerate(self.train_x):
+            init_xs_to_scores_dict[x] = self.train_y.squeeze()[idx].item()
+        self.objective.xs_to_scores_dict = init_xs_to_scores_dict
+
+    def initialize_tr_state(self):
+        self.tr_state = TurboStateConstrained( # initialize turbo state
+            dim=self.objective.dim,
+            batch_size=self.bsz, 
+            center_point=None,
+            # best_value=None, ## TODO: make sure this is right
+            # best_constraint_values=best_constraint_values, ## TODO: make sure this is right
         )
-
-        # considering constraints
-        if self.train_c is not None:
-            self.c_models = update_constraint_surr_models(
-                self.c_models,
-                self.c_mlls,
-                self.learning_rte,
-                X,
-                train_c,
-                n_epochs
-            )
-
-        self.initial_model_training_complete = True
-
-    def is_feasible(self, x): 
-        current_time = time.time()
-        # also make sure candidate satisfies constraints
-        if isinstance(x, str):
-            seq = [x] 
-        else:
-            seq = x
-        # This is already a string, so no need to do vae decode
-        # import pdb; pdb.set_trace()
-        current_time = time.time()
-        cvals = self.objective.compute_constraints(seq)
-        # print(f"checking candidate for constraints in {time.time() - current_time}")
-        # return false if any of cvals are > 0
-        if cvals is not None:
-            if cvals.max() > 0:
-                return False
-        return True 
-
-    def sample_random_searchspace_points(self, N):
-        lb, ub = self.objective.lb, self.objective.ub 
-        if ub is None: ub = self.search_space_data().max() 
-        if lb is None: lb = self.search_space_data().max() 
-        return torch.rand(N, self.objective.dim)*(ub - lb) + lb
-
-    def randomly_sample_feasible_center(self, max_n_samples=1_000):
-        ''' Rare edge case when we run out of feasible evaluated datapoints
-        and must randomly sample to find a new feasible center point
-        '''
-        n_samples = 0
-        while True:
-            if n_samples > max_n_samples:
-                raise RuntimeError(f'Failed to find a feasible tr center after {n_samples} random samples, recommend tring use of smaller M or smaller tau')
-            center_point = self.sample_random_searchspace_points(N=1) 
-            center_x = self.objective.vae_decode(center_point)
-            n_samples += 1
-            if self.is_feasible(center_x):
-                out_dict = self.objective(center_point, center_x)
-                center_score = out_dict['scores'].item() 
-                center_cval = out_dict['constr_vals'].item()
-                # add new point to existing data 
-                self.update_next(
-                    z_next_=center_point,
-                    y_next_=torch.tensor(center_score).float(),
-                    x_next_=center_x,
-                    c_next_=torch.tensor(center_cval).float(),
-                )
-                break 
-
-        return center_x, center_point, center_score
+        
+        self.recenter_trs()
+        return self
 
     def initialize_top_k(self):
         ''' Initialize top k x, y, and zs'''
@@ -288,6 +163,19 @@ class LOLBOStateConstrained:
             self.top_k_zs = []
             if self.train_c is not None:
                 self.top_k_cs = []
+    
+    def initialize_diffusion_model(self):
+        if self.task == "molecule":
+            ckpt_path = "./data/molecule_diffusion.ckpt"
+        elif self.task == "peptide":
+            ckpt_path = "./data/peptide_diffusion.ckpt"
+        else:
+            self.diffusion = None
+            return self
+        
+        self.diffusion = DiffusionModel.load_from_checkpoint(ckpt_path)
+        self.diffusion.eval().cuda()
+        self.diffusion.freeze()
 
     def update_next(
         self,
@@ -356,6 +244,47 @@ class LOLBOStateConstrained:
             self.train_c = torch.cat((self.train_c, c_next_), dim=-2)
 
         return self
+    
+    def update_surrogate_model(self): 
+        if not self.initial_model_training_complete:
+            # first time training surr model --> train on all data
+            n_epochs = self.init_n_epochs
+            X = self.search_space_data() # this is just self.train_x
+            Y = self.train_y.squeeze(-1)
+            # considering constraints
+            train_c = self.train_c
+        else:
+            # otherwise, only train on most recent batch of data
+            n_epochs = self.num_update_epochs
+            X = self.search_space_data()[-self.num_new_points:]
+            Y = self.train_y[-self.num_new_points:].squeeze(-1)
+            # considering constraints
+            if self.train_c is not None:
+                train_c = self.train_c[-self.num_new_points:]
+            else:
+                train_c = None 
+            
+        self.model = update_surr_model(
+            self.model,
+            self.mll,
+            self.learning_rte,
+            X,
+            Y,
+            n_epochs
+        )
+
+        # considering constraints
+        if self.train_c is not None:
+            self.c_models = update_constraint_surr_models(
+                self.c_models,
+                self.c_mlls,
+                self.learning_rte,
+                X,
+                train_c,
+                n_epochs
+            )
+
+        self.initial_model_training_complete = True
 
     def update_models_e2e(self):
         '''Finetune VAE end to end with surrogate model
@@ -437,6 +366,80 @@ class LOLBOStateConstrained:
                         self.update_next(z,scores_arr,selfies_list, constraints_list)
             torch.cuda.empty_cache()
         self.model.eval() 
+
+    def sample_random_searchspace_points(self, N):
+        lb, ub = self.objective.lb, self.objective.ub 
+        if ub is None: ub = self.search_space_data().max() 
+        if lb is None: lb = self.search_space_data().max() 
+        return torch.rand(N, self.objective.dim)*(ub - lb) + lb
+
+    def is_feasible(self, x): 
+        current_time = time.time()
+        # also make sure candidate satisfies constraints
+        if isinstance(x, str):
+            seq = [x] 
+        else:
+            seq = x
+        # This is already a string, so no need to do vae decode
+        # import pdb; pdb.set_trace()
+        current_time = time.time()
+        cvals = self.objective.compute_constraints(seq)
+        # print(f"checking candidate for constraints in {time.time() - current_time}")
+        # return false if any of cvals are > 0
+        if cvals is not None:
+            if cvals.max() > 0:
+                return False
+        return True 
+
+    def randomly_sample_feasible_center(self, max_n_samples=1_000):
+        ''' Rare edge case when we run out of feasible evaluated datapoints
+        and must randomly sample to find a new feasible center point
+        '''
+        n_samples = 0
+        while True:
+            if n_samples > max_n_samples:
+                raise RuntimeError(f'Failed to find a feasible tr center after {n_samples} random samples, recommend tring use of smaller M or smaller tau')
+            center_point = self.sample_random_searchspace_points(N=1) 
+            center_x = self.objective.vae_decode(center_point)
+            n_samples += 1
+            if self.is_feasible(center_x):
+                out_dict = self.objective(center_point, center_x)
+                center_score = out_dict['scores'].item() 
+                center_cval = out_dict['constr_vals'].item()
+                # add new point to existing data 
+                self.update_next(
+                    z_next_=center_point,
+                    y_next_=torch.tensor(center_score).float(),
+                    x_next_=center_x,
+                    c_next_=torch.tensor(center_cval).float(),
+                )
+                break 
+
+        return center_x, center_point, center_score
+
+    def recenter_trs(self):
+        _, top_t_idxs = torch.topk(self.train_y.squeeze(), len(self.train_y))
+        train_y_idx_num = 0
+
+        while True: 
+            # if we run out of feasible points in dataset
+            if train_y_idx_num >= len(self.train_y): 
+                # Randomly sample a new feasible point (rare occurance)
+                print('Randomly sample feasible center during recenter trs')
+                center_x, center_point, center_score = self.randomly_sample_feasible_center() 
+                break
+            # otherwise, finding highest scoring feassible point in remaining dataset for tr center
+            center_idx = top_t_idxs[train_y_idx_num]
+            center_score = self.train_y[center_idx].item()
+            center_point = self.search_space_data()[center_idx] 
+            center_x = self.train_x[center_idx]
+            train_y_idx_num += 1
+            if self.is_feasible(center_x):
+                break 
+
+        self.tr_state.center_point = center_point
+        self.tr_state.best_value = center_score
+        self.tr_state.best_x = center_x 
 
     def generate_batch_single_tr(self, tr_state):
         z_next = generate_batch(

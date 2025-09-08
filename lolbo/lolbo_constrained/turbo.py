@@ -2,7 +2,7 @@ import math
 import torch
 from dataclasses import dataclass
 from torch.quasirandom import SobolEngine
-from botorch.acquisition import qExpectedImprovement
+from botorch.acquisition import qExpectedImprovement, qLogExpectedImprovement
 from botorch.optim import optimize_acqf
 from typing import Any
 # from .approximate_gp import *
@@ -26,7 +26,6 @@ class TurboStateConstrained:
     success_tolerance: int = 10 
     restart_triggered: bool = False
     best_constraint_values: torch.Tensor = torch.ones(2,)*torch.inf
-    idx: int = None
 
 def update_state_unconstrained(state, Y_next):
     if max(Y_next) > state.best_value + 1e-3 * math.fabs(state.best_value):
@@ -146,14 +145,15 @@ def generate_batch(
     num_restarts=10,
     raw_samples=256,
     acqf="ts",  # "ei" or "ts"
+    diffusion=None,
     dtype=torch.float32,
     device=torch.device('cuda'),
     absolute_bounds=None, 
     constraint_model_list=None,
 ):
-    assert acqf in ("ts", "ei")
+    assert acqf in ["ts", "ei", "ddim", "ddim_repaint"]
     if constraint_model_list is not None:
-        assert acqf == "ts" # SCBO only works with ts
+        assert acqf in ["ts", "ddim_repaint"] # SCBO only works with ts or ddim_repaint
         constrained=True
     else:
         constrained=False
@@ -211,5 +211,68 @@ def generate_batch(
         ) 
         with torch.no_grad():
             X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size )
+    
+    if acqf == "ddim":
+        assert diffusion is not None
+
+        log_ei_mod = qLogExpectedImprovement(
+            model=model.cuda(),  # type: ignore
+            best_f=Y.max().cuda(),
+        )
+
+        def cond_fn_log_ei(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+            with torch.enable_grad():
+                x = x.detach().requires_grad_(True)
+                log_ei = log_ei_mod(x)
+                if log_ei.dim() > 1:
+                    log_ei = log_ei.sum(dim=tuple(range(1, log_ei.dim())))
+                s = log_ei.sum()
+                (grad_x,) = torch.autograd.grad(s, x, retain_graph=False, create_graph=False)
+
+            return grad_x.detach()
+
+        X_next = diffusion.ddim_sample(
+            batch_size=batch_size,
+            sampling_steps=50,
+            guidance_scale=1.0,
+            cond_fn=cond_fn_log_ei,
+        )
+
+    if acqf == "ddim_repaint":
+        assert diffusion is not None
+
+        repaint_candidates = 128
+
+        dim = X.shape[-1]
+        tr_lb = tr_lb.cuda()
+        tr_ub = tr_ub.cuda()
+        sobol = SobolEngine(dim, scramble=True)
+        pert = sobol.draw(repaint_candidates).to(dtype=dtype).cuda()
+        pert = tr_lb + (tr_ub - tr_lb) * pert
+        tr_lb = tr_lb.cuda()
+        tr_ub = tr_ub.cuda()
+        # Create a perturbation mask
+        prob_perturb = min(20.0 / dim, 1.0)
+        mask = torch.rand(repaint_candidates, dim, dtype=dtype, device=device) <= prob_perturb
+        ind = torch.where(mask.sum(dim=1) == 0)[0]
+        mask[ind, torch.randint(0, dim - 1, size=(len(ind),), device=device)] = 1
+        mask = (~mask.cuda()).float()
+
+        X_cand = x_center.expand(repaint_candidates, dim).clone()
+
+        X_cand = diffusion.ddim_repaint(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+        )
+        thompson_sampling = MaxPosteriorSampling(
+            model=model,
+            constraint_models=constraint_model_list,
+            replacement=False,
+            constrained=constrained,
+        )
+        with torch.no_grad():
+            X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size)
 
     return X_next

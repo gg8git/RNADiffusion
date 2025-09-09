@@ -6,6 +6,8 @@ import sys
 import torch 
 import numpy as np
 from typing import List, Tuple
+from model.diffusion_v2.vae import BaseVAE
+from model.diffusion_v2.GaussianDiffusion import ExtinctPredictor
 
 
 try:
@@ -162,10 +164,43 @@ class APEXSimilarityConstraint(ConstraintFunction):
         
         return torch.tensor(similarities).float()
 
+class ExtinctPeptideConstraint(ConstraintFunction):
+    def __init__( 
+        self,
+        threshold_value,
+        threshold_type, # should be "min"
+    ):
+        super().__init__(
+            threshold_type=threshold_type,
+            threshold_value=threshold_value,
+        )
+
+        self.vae = BaseVAE.load_from_checkpoint("data/peptide_vae.ckpt")
+        self.vae.cuda().eval()
+        self.vae.freeze()
+
+        self.predictor = ExtinctPredictor.load_from_checkpoint("data/extinct_predictor.ckpt")
+        self.predictor.cuda().eval()
+        self.predictor.freeze()
+    
+    def query_black_box(self, x_list):
+        if not type(x_list) == list:
+            x_list = x_list.tolist() 
+        
+        tokens = self.vae.tokenize(x_list)
+        out_dict = self.vae(tokens.cuda())
+        z = out_dict['z'].flatten(1)
+
+        logits = self.predictor(z)
+        predictions = logits.flatten().sigmoid().float()
+        
+        return predictions.detach().cpu()
+
 CONSTRAINT_FUNCTIONS_DICT = {}
 CONSTRAINT_FUNCTIONS_DICT['length'] = ExampleLengthConstraint
 CONSTRAINT_FUNCTIONS_DICT['num_gs'] = ExampleNumGsConstraint
 CONSTRAINT_FUNCTIONS_DICT['similarity'] = APEXSimilarityConstraint
+CONSTRAINT_FUNCTIONS_DICT['extinct'] = ExtinctPeptideConstraint
 
 
 if __name__ == "__main__":

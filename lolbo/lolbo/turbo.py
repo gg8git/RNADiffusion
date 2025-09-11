@@ -56,6 +56,7 @@ def generate_batch(
     Y,  # Function values
     batch_size,
     n_candidates=None,  # Number of candidates for Thompson sampling
+    repaint_candidates=128,  # Number of candidates for DDIM with repainting
     num_restarts=10,
     raw_samples=256,
     acqf="ts",  # "ei" or "ts" or "ddim"
@@ -137,8 +138,6 @@ def generate_batch(
         )
 
     if acqf == "ddim_repaint":
-        repaint_candidates = 128
-
         dim = X.shape[-1]
         tr_lb = tr_lb.cuda()
         tr_ub = tr_ub.cuda()

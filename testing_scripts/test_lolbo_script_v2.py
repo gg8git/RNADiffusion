@@ -3,8 +3,8 @@ import warnings
 
 import fire
 import numpy as np
+import pandas as pd
 import torch
-import pandas as pd 
 
 warnings.filterwarnings("ignore")
 from rdkit import RDLogger
@@ -23,9 +23,9 @@ try:
 except ModuleNotFoundError:
     WANDB_IMPORTED_SUCCESSFULLY = False
 
-from lolbo import MoleculeObjective, MoleculeObjectiveV2, ConstrainedPeptideObjective, ConstrainedPeptideObjectiveV2
-from datamodules.selfies_datamodule import compute_molecule_train_zs, load_molecule_train_data
 from datamodules.kmer_datamodule import compute_peptide_train_zs, load_peptide_train_data
+from datamodules.selfies_datamodule import compute_molecule_train_zs, load_molecule_train_data
+from lolbo import ConstrainedPeptideObjective, ConstrainedPeptideObjectiveV2, MoleculeObjective, MoleculeObjectiveV2
 from utils.guacamol_utils import GUACAMOL_TASK_NAMES
 
 
@@ -75,17 +75,18 @@ class Optimize:
         use_vae_v2: bool = False,
         path_to_vae_statedict: str = "data/molecule_vae.ckpt",
         max_string_length: int = 1024,
-        save_results_top_level_dir: str = "results/", # local directory where run data/results are saved 
-
+        save_results_top_level_dir: str = "results/",  # local directory where run data/results are saved
+        repaint_candidates: int = None,  # number of candidates to use for thompson sampling acquisition # type: ignore
         # add peptide task + constraints if needed
-        task_specific_args: list=[], # list of additional args to be passed into objective funcion 
-        constraint_function_ids: list=[], # list of strings identifying the black box constraint function to use
-        constraint_thresholds: list=[], # list of corresponding threshold values (floats)
-        constraint_types: list=[], # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
+        task_specific_args: list = [],  # list of additional args to be passed into objective funcion
+        constraint_function_ids: list = [],  # list of strings identifying the black box constraint function to use
+        constraint_thresholds: list = [],  # list of corresponding threshold values (floats)
+        constraint_types: list = [],  # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
     ):
         self.path_to_vae_statedict = path_to_vae_statedict
         self.max_string_length = max_string_length
         self.constrained = constrained
+        self.repaint_candidates = repaint_candidates
 
         # add all local args to method args dict to be logged by wandb
         self.method_args = {}
@@ -96,7 +97,9 @@ class Optimize:
         self.wandb_entity = wandb_entity
         self.task_id = task_id
         self.task = "molecule" if self.task_id in GUACAMOL_TASK_NAMES + ["logp"] else "peptide"
-        assert not (self.task != "peptide" and self.constrained), "constrained optimization can only be done for peptides"
+        assert not (self.task != "peptide" and self.constrained), (
+            "constrained optimization can only be done for peptides"
+        )
         self.max_n_oracle_calls = max_n_oracle_calls
         self.verbose = verbose
         self.num_initialization_points = num_initialization_points
@@ -114,28 +117,34 @@ class Optimize:
             assert self.wandb_entity, (
                 "Must specify a valid wandb account username (wandb_entity) to run with wandb tracking"
             )
-        
+
         # handle peptide task + constraint args
         if self.task == "peptide":
             self.score_version = task_specific_args[0]
             self.task_specific_args = task_specific_args
         assert len(constraint_function_ids) == len(constraint_thresholds)
         assert len(constraint_thresholds) == len(constraint_types)
-        self.constraint_function_ids = constraint_function_ids # list of strings identifying the black box constraint function to use
-        self.constraint_thresholds = constraint_thresholds # list of corresponding threshold values (floats)
-        self.constraint_types = constraint_types # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
+        self.constraint_function_ids = (
+            constraint_function_ids  # list of strings identifying the black box constraint function to use
+        )
+        self.constraint_thresholds = constraint_thresholds  # list of corresponding threshold values (floats)
+        self.constraint_types = (
+            constraint_types  # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
+        )
 
         # initialize train data for particular task
         #   must define self.init_train_x, self.init_train_y, and self.init_train_z
         self.load_train_data()
         # initialize latent space objective (self.objective) for particular task
-        assert acq_func not in ["ddim", "ddim_repaint"] or use_vae_v2, "if acq_func is ddim or ddim_repaint, must use vae v2"
+        assert acq_func not in ["ddim", "ddim_repaint"] or use_vae_v2, (
+            "if acq_func is ddim or ddim_repaint, must use vae v2"
+        )
         self.initialize_objective(use_vae_v2)
         assert (
-            isinstance(self.objective, MoleculeObjective) or 
-            isinstance(self.objective, MoleculeObjectiveV2) or
-            isinstance(self.objective, ConstrainedPeptideObjective) or
-            isinstance(self.objective, ConstrainedPeptideObjectiveV2)
+            isinstance(self.objective, MoleculeObjective)
+            or isinstance(self.objective, MoleculeObjectiveV2)
+            or isinstance(self.objective, ConstrainedPeptideObjective)
+            or isinstance(self.objective, ConstrainedPeptideObjectiveV2)
         ), "self.objective must be an instance of MoleculeObjective or MoleculeObjectiveV2"
         assert type(self.init_train_x) is list, "load_train_data() must set self.init_train_x to a list of xs"
         assert torch.is_tensor(self.init_train_y), "load_train_data() must set self.init_train_y to a tensor of ys"
@@ -167,6 +176,7 @@ class Optimize:
                 acq_func=acq_func,
                 verbose=verbose,
                 task=self.task,
+                repaint_candidates=self.repaint_candidates,
             )
         else:
             self.lolbo_state = LOLBOState(
@@ -183,13 +193,16 @@ class Optimize:
                 acq_func=acq_func,
                 verbose=verbose,
                 task=self.task,
+                repaint_candidates=self.repaint_candidates,
             )
 
         # add args to method args dict to be logged by wandb
         self.method_args["molopt"] = locals()
         del self.method_args["molopt"]["self"]
 
-    def initialize_save_results_dir(self,):
+    def initialize_save_results_dir(
+        self,
+    ):
         save_dir = f"{self.save_results_top_level_dir}"
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
@@ -200,13 +213,13 @@ class Optimize:
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
         self.save_results_dir = save_dir
-        return self 
-
+        return self
 
     def initialize_objective(self, use_vae_v2=False):
-
         if self.task == "molecule":
-            assert hasattr(self, "init_smiles_to_selfies"), "molecule objective must have init smiles to selfies function"
+            assert hasattr(self, "init_smiles_to_selfies"), (
+                "molecule objective must have init smiles to selfies function"
+            )
 
             if use_vae_v2:
                 # initialize molecule objective
@@ -242,9 +255,9 @@ class Optimize:
                     max_string_length=self.max_string_length,
                     path_to_vae_statedict=self.path_to_vae_statedict,
                     # constraints
-                    constraint_function_ids=self.constraint_function_ids, # list of strings identifying the black box constraint function to use
-                    constraint_thresholds=self.constraint_thresholds, # list of corresponding threshold values (floats)
-                    constraint_types=self.constraint_types, # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
+                    constraint_function_ids=self.constraint_function_ids,  # list of strings identifying the black box constraint function to use
+                    constraint_thresholds=self.constraint_thresholds,  # list of corresponding threshold values (floats)
+                    constraint_types=self.constraint_types,  # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
                 )
             else:
                 self.objective = ConstrainedPeptideObjective(
@@ -253,9 +266,9 @@ class Optimize:
                     max_string_length=self.max_string_length,
                     path_to_vae_statedict=self.path_to_vae_statedict,
                     # constraints
-                    constraint_function_ids=self.constraint_function_ids, # list of strings identifying the black box constraint function to use
-                    constraint_thresholds=self.constraint_thresholds, # list of corresponding threshold values (floats)
-                    constraint_types=self.constraint_types, # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
+                    constraint_function_ids=self.constraint_function_ids,  # list of strings identifying the black box constraint function to use
+                    constraint_thresholds=self.constraint_thresholds,  # list of corresponding threshold values (floats)
+                    constraint_types=self.constraint_types,  # list of strings giving correspoding type for each threshold ("min" or "max" allowed)
                 )
 
             # if train zs have not been pre-computed for particular vae, compute them
@@ -280,7 +293,7 @@ class Optimize:
         assert self.num_initialization_points <= 20_000
 
         # fix this shit
-        
+
         if self.task == "molecule":
             smiles, selfies, zs, ys = load_molecule_train_data(
                 task_id=self.task_id,
@@ -297,7 +310,7 @@ class Optimize:
             self.init_smiles_to_selfies = {}
             for ix, smile in enumerate(self.init_train_x):
                 self.init_smiles_to_selfies[smile] = selfies[ix]
-        
+
         elif self.task == "peptide":
             self.init_train_x, self.init_train_z, self.init_train_y = load_peptide_train_data(
                 score_version=self.score_version,
@@ -350,7 +363,7 @@ class Optimize:
         """Main optimization loop"""
         # creates wandb tracker iff self.track_with_wandb == True
         self.create_wandb_tracker()
-        # create directory to periodically save best sequences and scores found during opt: 
+        # create directory to periodically save best sequences and scores found during opt:
         self.initialize_save_results_dir()
         # main optimization loop
         while self.lolbo_state.objective.num_calls < self.max_n_oracle_calls:
@@ -378,7 +391,7 @@ class Optimize:
                     print("\nNew best found:")
                     self.print_progress_update()
                 self.lolbo_state.new_best_found = False
-            self.save_topk_results() # save topk solutions found so far locally on each step (in case we kill runs early)
+            self.save_topk_results()  # save topk solutions found so far locally on each step (in case we kill runs early)
 
         # if verbose, print final results
         if self.verbose:
@@ -405,18 +418,19 @@ class Optimize:
 
         return self
 
-    def save_topk_results(self,):
-        ''' Save top k solutions found during optimization so far to CSV
-        ''' 
+    def save_topk_results(
+        self,
+    ):
+        """Save top k solutions found during optimization so far to CSV"""
         results_df = {
-            "top_k_scores":self.lolbo_state.top_k_scores,
-            "top_k_solutions":self.lolbo_state.top_k_xs,
+            "top_k_scores": self.lolbo_state.top_k_scores,
+            "top_k_solutions": self.lolbo_state.top_k_xs,
         }
         results_df = pd.DataFrame.from_dict(results_df)
         results_df.to_csv(f"{self.save_results_dir}top_k_solutions_found.csv", index=False)
 
-        return self 
-    
+        return self
+
     def log_topk_table_wandb(self):
         """After optimization finishes, log
         top k inputs and scores found

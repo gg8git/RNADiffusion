@@ -5,10 +5,11 @@ import lightning as L
 import torch
 from gpytorch.mlls import PredictiveLogLikelihood
 
-from .turbo import TurboState, generate_batch, update_state
-from .utils import update_models_end_to_end, update_surr_model
 from model import GPModelDKL
 from model.diffusion_v2 import DiffusionModel
+
+from .turbo import TurboState, generate_batch, update_state
+from .utils import update_models_end_to_end, update_surr_model
 
 
 class LOLBOState:
@@ -27,6 +28,7 @@ class LOLBOState:
         acq_func="ts",
         verbose=True,
         task="molecule",
+        repaint_candidates: int = 128,
     ):
         self.objective = objective  # objective with vae for particular task
         self.train_x = train_x  # initial train x data
@@ -43,6 +45,7 @@ class LOLBOState:
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
         self.verbose = verbose
         self.task = task
+        self.repaint_candidates = repaint_candidates
 
         assert acq_func in ["ei", "ts", "ddim", "ddim_repaint"]
         if minimize:
@@ -107,7 +110,7 @@ class LOLBOState:
         else:
             self.diffusion = None
             return self
-        
+
         self.diffusion = DiffusionModel.load_from_checkpoint(ckpt_path)
         self.diffusion.eval().cuda()
         self.diffusion.freeze()
@@ -245,6 +248,7 @@ class LOLBOState:
             batch_size=self.bsz,
             acqf=self.acq_func,
             diffusion=self.diffusion,
+            repaint_candidates=self.repaint_candidates,
         )
         # 2. Evaluate the batch of candidates by calling oracle
         with torch.no_grad():

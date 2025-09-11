@@ -164,9 +164,9 @@ def generate_batch(
     constraint_model_list=None,
     repaint_candidates=128,  # number of candidates to repaint when using ddim with repainting
 ):
-    assert acqf in ["ts", "ei", "ddim", "ddim_repaint"]
+    assert acqf in ["ts", "ei", "ddim", "ddim_repaint", "ddim_repaint_tr"]
     if constraint_model_list is not None:
-        assert acqf in ["ts", "ddim_repaint"]  # SCBO only works with ts or ddim_repaint
+        assert acqf in ["ts", "ddim_repaint", "ddim_repaint_tr"]  # SCBO only works with ts or ddim_repaint
         constrained = True
     else:
         constrained = False
@@ -258,7 +258,7 @@ def generate_batch(
             cond_fn=cond_fn_log_ei,
         )
 
-    if acqf == "ddim_repaint":
+    if acqf == "ddim_repaint" or acqf == "ddim_repaint_tr":
         assert diffusion is not None
 
         dim = X.shape[-1]
@@ -283,6 +283,8 @@ def generate_batch(
             mask=mask,
             sampling_steps=50,
             u_steps=10,
+            tr_center=x_center.cuda() if acqf == "ddim_repaint_tr" else None,
+            tr_halfwidth=weights.cuda() * state.length / 2.0 if acqf == "ddim_repaint_tr" else None,
         )
         thompson_sampling = MaxPosteriorSampling(
             model=model,

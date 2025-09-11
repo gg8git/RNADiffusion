@@ -177,6 +177,8 @@ class DiffusionModel(L.LightningModule):
         mask: Tensor,
         sampling_steps: int = 50,
         u_steps: int = 20,
+        tr_center: Tensor | None = None,
+        tr_halfwidth: float | Tensor | None = None,
     ) -> Tensor:
         """
         Re-painting with DDIM: https://arxiv.org/abs/2201.09865
@@ -199,6 +201,13 @@ class DiffusionModel(L.LightningModule):
         x_known = x_known.reshape(B, self.n_bn, self.d_bn).to(device)
         mask = mask.reshape(B, self.n_bn, self.d_bn).to(device)
         x_start = None
+
+        if tr_center is not None:
+            tr_center = tr_center.reshape(1, self.n_bn, self.d_bn).to(device)
+        if tr_halfwidth is not None and isinstance(tr_halfwidth, float):
+            tr_halfwidth = torch.full((1, self.n_bn, self.d_bn), tr_halfwidth, device=device)
+        elif tr_halfwidth is not None:
+            tr_halfwidth = tr_halfwidth.reshape(1, self.n_bn, self.d_bn).to(device)  # type: ignore
 
         for t, t_next in tqdm(time_pairs, desc="DDIM RePaint", leave=False):
             t_vec = torch.full((B,), t, device=device, dtype=torch.long)
@@ -242,6 +251,20 @@ class DiffusionModel(L.LightningModule):
                     x_t = ratio.sqrt() * x_tm1 + (1.0 - ratio).sqrt() * _z
                 else:
                     x_t = x_tm1
+
+                if tr_center is not None and tr_halfwidth is not None:
+                    # Interpolate between a half-width of 6 at t=T to the given half-width at t=0
+                    interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
+                    hw_t = tr_halfwidth * (1 - interpolant) + 6.0 * interpolant
+
+                    eps = 1e-3
+                    x_t = tr_center + (hw_t - eps) * torch.tanh((x_t - tr_center) / (hw_t - eps))
+
+        # Finally, clamp
+        if tr_center is not None and tr_halfwidth is not None:
+            lower_0 = tr_center - tr_halfwidth
+            upper_0 = tr_center + tr_halfwidth
+            x_t = x_t.clamp(min=lower_0, max=upper_0)
 
         return x_t.flatten(1)
 

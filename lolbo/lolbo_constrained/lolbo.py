@@ -54,7 +54,7 @@ class LOLBOStateConstrained:
         self.task = task
         self.repaint_candidates = repaint_candidates  # number of candidates to repaint when using ddim with repainting
 
-        assert acq_func in ["ts", "ei", "ddim", "ddim_repaint"]
+        assert acq_func in ["ts", "ei", "ddim", "ddim_repaint", "ddim_repaint_tr"]
         if minimize:
             self.train_y = self.train_y * -1
 

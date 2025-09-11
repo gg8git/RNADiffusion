@@ -137,7 +137,7 @@ def generate_batch(
             cond_fn=cond_fn_log_ei,
         )
 
-    if acqf == "ddim_repaint":
+    if acqf == "ddim_repaint" or acqf == "ddim_repaint_tr":
         dim = X.shape[-1]
         tr_lb = tr_lb.cuda()
         tr_ub = tr_ub.cuda()
@@ -160,6 +160,8 @@ def generate_batch(
             mask=mask,
             sampling_steps=50,
             u_steps=10,
+            tr_center=x_center.cuda() if acqf == "ddim_repaint_tr" else None,
+            tr_halfwidth=weights.cuda() * state.length / 2.0 if acqf == "ddim_repaint_tr" else None,
         )
         thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)
         X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size)

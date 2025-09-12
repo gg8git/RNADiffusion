@@ -62,7 +62,6 @@ class LOLBOState:
         )
         self.new_best_found = False
 
-        import ipdb; ipdb.set_trace()
         self.initialize_top_k()
         self.initialize_surrogate_model()
         self.initialize_tr_state()
@@ -110,7 +109,6 @@ class LOLBOState:
         self.mll = PredictiveLogLikelihood(self.model.likelihood, self.model, num_data=self.train_z.size(-2))
         self.model = self.model.eval()
         self.model = self.model.cuda()
-        import ipdb; ipdb.set_trace()
 
         return self
 
@@ -252,7 +250,6 @@ class LOLBOState:
         """
         # 1. Generate a batch of candidates in
         #   trust region using surrogate model
-        import ipdb; ipdb.set_trace()
         z_next = generate_batch(
             state=self.tr_state,
             model=self.model,

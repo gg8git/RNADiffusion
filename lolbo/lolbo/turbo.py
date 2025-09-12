@@ -77,7 +77,6 @@ def generate_batch(
     if use_dsp:
         tr_lb = -3 * torch.ones_like(x_center)
         tr_ub = 3 * torch.ones_like(x_center)
-    import ipdb; ipdb.set_trace()
 
     if acqf == "ei":
         ei = qExpectedImprovement(model.cuda(), Y.max().cuda())

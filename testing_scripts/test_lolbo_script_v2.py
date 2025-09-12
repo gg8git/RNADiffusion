@@ -198,7 +198,6 @@ class Optimize:
                 task=self.task,
                 repaint_candidates=self.repaint_candidates,
             )
-        import ipdb; ipdb.set_trace()
 
         # add args to method args dict to be logged by wandb
         self.method_args["molopt"] = locals()

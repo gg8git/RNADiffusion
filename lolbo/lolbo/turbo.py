@@ -60,6 +60,7 @@ def generate_batch(
     num_restarts=10,
     raw_samples=256,
     acqf="ts",  # "ei" or "ts" or "ddim"
+    use_dsp=False,
     diffusion=None,
     dtype=torch.float32,
     device=torch.device("cuda"),
@@ -73,18 +74,20 @@ def generate_batch(
     tr_lb = x_center - weights * state.length / 2.0
     tr_ub = x_center + weights * state.length / 2.0
 
+    if use_dsp:
+        tr_lb = -3 * torch.ones_like(x_center)
+        tr_ub = 3 * torch.ones_like(x_center)
+    import ipdb; ipdb.set_trace()
+
     if acqf == "ei":
-        try:
-            ei = qExpectedImprovement(model.cuda(), Y.max().cuda())
-            X_next, _ = optimize_acqf(
-                ei,
-                bounds=torch.stack([tr_lb, tr_ub]).cuda(),
-                q=batch_size,
-                num_restarts=num_restarts,
-                raw_samples=raw_samples,
-            )
-        except:
-            acqf = "ts"
+        ei = qExpectedImprovement(model.cuda(), Y.max().cuda())
+        X_next, _ = optimize_acqf(
+            ei,
+            bounds=torch.stack([tr_lb, tr_ub]).cuda(),
+            q=batch_size,
+            num_restarts=num_restarts,
+            raw_samples=raw_samples,
+        )
 
     if acqf == "ts":
         dim = X.shape[-1]

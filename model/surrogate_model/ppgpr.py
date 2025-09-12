@@ -1,8 +1,11 @@
 # ppgpr
+import math
 import gpytorch
 from botorch.posteriors.gpytorch import GPyTorchPosterior
 from gpytorch.models import ApproximateGP
 from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
+from gpytorch.priors import LogNormalPrior
+from gpytorch.constraints.constraints import GreaterThan
 
 from .base import DenseNetwork
 
@@ -38,7 +41,7 @@ class GPModel(ApproximateGP):
 
 # gp model with deep kernel
 class GPModelDKL(ApproximateGP):
-    def __init__(self, inducing_points, likelihood, hidden_dims=(256, 256)):
+    def __init__(self, inducing_points, likelihood, hidden_dims=(256, 256), ls_prior=False):
         feature_extractor = DenseNetwork(input_dim=inducing_points.size(-1), hidden_dims=hidden_dims).to(
             inducing_points.device
         )
@@ -50,6 +53,16 @@ class GPModelDKL(ApproximateGP):
         super(GPModelDKL, self).__init__(variational_strategy)
         self.mean_module = gpytorch.means.ConstantMean()
         self.covar_module = gpytorch.kernels.ScaleKernel(gpytorch.kernels.RBFKernel())
+
+        if ls_prior:
+            dims = inducing_points.size(1)
+            loc = 1.4 + math.log(dims) * 0.5
+            scale = (1.73205 ** 2 + math.log(dims) * 0) ** 0.5
+            lengthscale_prior=LogNormalPrior(loc=loc, scale=scale)
+            lengthscale_constraint=GreaterThan(1e-4)
+            self.covar_module = gpytorch.kernels.RBFKernel(ard_num_dims=dims, lengthscale_prior=lengthscale_prior, lengthscale_constraint=lengthscale_constraint)
+            self.covar_module = gpytorch.kernels.ScaleKernel(self.covar_module)
+
         self.num_outputs = 1  # must be one
         self.likelihood = likelihood
         self.feature_extractor = feature_extractor

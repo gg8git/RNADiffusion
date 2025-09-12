@@ -72,6 +72,7 @@ class Optimize:
         k: int = 1_000,
         verbose: bool = True,
         constrained: bool = False,
+        use_dsp: bool = False,
         use_vae_v2: bool = False,
         path_to_vae_statedict: str = "data/molecule_vae.ckpt",
         max_string_length: int = 1024,
@@ -174,6 +175,7 @@ class Optimize:
                 learning_rte=learning_rte,
                 bsz=bsz,
                 acq_func=acq_func,
+                use_dsp=use_dsp,
                 verbose=verbose,
                 task=self.task,
                 repaint_candidates=self.repaint_candidates,
@@ -191,10 +193,12 @@ class Optimize:
                 learning_rte=learning_rte,
                 bsz=bsz,
                 acq_func=acq_func,
+                use_dsp=use_dsp,
                 verbose=verbose,
                 task=self.task,
                 repaint_candidates=self.repaint_candidates,
             )
+        import ipdb; ipdb.set_trace()
 
         # add args to method args dict to be logged by wandb
         self.method_args["molopt"] = locals()

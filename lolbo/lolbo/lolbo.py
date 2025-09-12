@@ -26,6 +26,7 @@ class LOLBOState:
         learning_rte=0.01,
         bsz=10,
         acq_func="ts",
+        use_dsp=False,
         verbose=True,
         task="molecule",
         repaint_candidates: int = 128,
@@ -43,6 +44,7 @@ class LOLBOState:
         self.learning_rte = learning_rte  # lr to use for model updates
         self.bsz = bsz  # acquisition batch size
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
+        self.use_dsp = use_dsp
         self.verbose = verbose
         self.task = task
         self.repaint_candidates = repaint_candidates
@@ -60,6 +62,7 @@ class LOLBOState:
         )
         self.new_best_found = False
 
+        import ipdb; ipdb.set_trace()
         self.initialize_top_k()
         self.initialize_surrogate_model()
         self.initialize_tr_state()
@@ -94,11 +97,20 @@ class LOLBOState:
 
     def initialize_surrogate_model(self):
         likelihood = gpytorch.likelihoods.GaussianLikelihood().cuda()
+
+        if self.use_dsp:
+            from gpytorch.priors import LogNormalPrior
+            from gpytorch.constraints.constraints import GreaterThan
+            noise_prior=LogNormalPrior(loc=-4, scale=1)
+            noise_constraint=GreaterThan(1e-4)
+            likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_prior=noise_prior, noise_constraint=noise_constraint).cuda()
+
         n_pts = min(self.train_z.shape[0], 1024)
-        self.model = GPModelDKL(self.train_z[:n_pts, :].cuda(), likelihood=likelihood).cuda()
+        self.model = GPModelDKL(self.train_z[:n_pts, :].cuda(), likelihood=likelihood, ls_prior=self.use_dsp).cuda()
         self.mll = PredictiveLogLikelihood(self.model.likelihood, self.model, num_data=self.train_z.size(-2))
         self.model = self.model.eval()
         self.model = self.model.cuda()
+        import ipdb; ipdb.set_trace()
 
         return self
 
@@ -240,6 +252,7 @@ class LOLBOState:
         """
         # 1. Generate a batch of candidates in
         #   trust region using surrogate model
+        import ipdb; ipdb.set_trace()
         z_next = generate_batch(
             state=self.tr_state,
             model=self.model,
@@ -247,6 +260,7 @@ class LOLBOState:
             Y=self.train_y,
             batch_size=self.bsz,
             acqf=self.acq_func,
+            use_dsp=self.use_dsp,
             diffusion=self.diffusion,
             repaint_candidates=self.repaint_candidates,
         )

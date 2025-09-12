@@ -32,6 +32,7 @@ class LOLBOStateConstrained:
         learning_rte=0.01,
         bsz=10,
         acq_func="ts",
+        use_dsp=False,
         verbose=True,
         task="molecule",
         repaint_candidates=128,
@@ -50,6 +51,7 @@ class LOLBOStateConstrained:
         self.learning_rte = learning_rte  # lr to use for model updates
         self.bsz = bsz  # acquisition batch size
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
+        self.use_dsp = use_dsp
         self.verbose = verbose
         self.task = task
         self.repaint_candidates = repaint_candidates  # number of candidates to repaint when using ddim with repainting
@@ -84,8 +86,16 @@ class LOLBOStateConstrained:
         self.c_mlls = []
         for i in range(self.train_c.shape[1]):
             likelihood = gpytorch.likelihoods.GaussianLikelihood().cuda()
+
+            if self.use_dsp:
+                from gpytorch.priors import LogNormalPrior
+                from gpytorch.constraints.constraints import GreaterThan
+                noise_prior=LogNormalPrior(loc=-4, scale=1)
+                noise_constraint=GreaterThan(1e-4)
+                likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_prior=noise_prior, noise_constraint=noise_constraint).cuda()
+
             n_pts = min(self.train_z.shape[0], 1024)
-            c_model = GPModelDKL(self.train_z[:n_pts, :].cuda(), likelihood=likelihood).cuda()
+            c_model = GPModelDKL(self.train_z[:n_pts, :].cuda(), likelihood=likelihood, ls_prior=self.use_dsp).cuda()
             c_mll = PredictiveLogLikelihood(c_model.likelihood, c_model, num_data=self.train_z.size(-2))
             c_model = c_model.eval()
             # c_model = self.model.cuda()
@@ -95,8 +105,16 @@ class LOLBOStateConstrained:
 
     def initialize_surrogate_model(self):
         likelihood = gpytorch.likelihoods.GaussianLikelihood().cuda()
+
+        if self.use_dsp:
+            from gpytorch.priors import LogNormalPrior
+            from gpytorch.constraints.constraints import GreaterThan
+            noise_prior=LogNormalPrior(loc=-4, scale=1)
+            noise_constraint=GreaterThan(1e-4)
+            likelihood = gpytorch.likelihoods.GaussianLikelihood(noise_prior=noise_prior, noise_constraint=noise_constraint).cuda()
+
         n_pts = min(self.search_space_data().shape[0], 1024)
-        self.model = GPModelDKL(self.search_space_data()[:n_pts, :].cuda(), likelihood=likelihood).cuda()
+        self.model = GPModelDKL(self.search_space_data()[:n_pts, :].cuda(), likelihood=likelihood, ls_prior=self.use_dsp).cuda()
         self.mll = PredictiveLogLikelihood(
             self.model.likelihood, self.model, num_data=self.search_space_data().size(-2)
         )
@@ -447,6 +465,7 @@ class LOLBOStateConstrained:
             Y=self.train_y,
             batch_size=self.bsz,
             acqf=self.acq_func,
+            use_dsp=self.use_dsp,
             diffusion=self.diffusion,
             absolute_bounds=(self.objective.lb, self.objective.ub),
             # considering constraints

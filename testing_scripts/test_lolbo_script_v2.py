@@ -77,7 +77,7 @@ class Optimize:
         path_to_vae_statedict: str = "data/molecule_vae.ckpt",
         max_string_length: int = 1024,
         save_results_top_level_dir: str = "results/",  # local directory where run data/results are saved
-        repaint_candidates: int = None,  # number of candidates to use for thompson sampling acquisition # type: ignore
+        repaint_candidates: int = 128,  # number of candidates to use for thompson sampling acquisition # type: ignore
         # add peptide task + constraints if needed
         task_specific_args: list = [],  # list of additional args to be passed into objective funcion
         constraint_function_ids: list = [],  # list of strings identifying the black box constraint function to use

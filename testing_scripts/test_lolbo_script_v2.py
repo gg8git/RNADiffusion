@@ -137,7 +137,7 @@ class Optimize:
         #   must define self.init_train_x, self.init_train_y, and self.init_train_z
         self.load_train_data()
         # initialize latent space objective (self.objective) for particular task
-        assert acq_func not in ["ddim", "ddim_repaint", "ddim_repaint_tr"] or use_vae_v2, (
+        assert acq_func not in ["ddim", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr"] or use_vae_v2, (
             "if acq_func is ddim or ddim_repaint, must use vae v2"
         )
         self.initialize_objective(use_vae_v2)

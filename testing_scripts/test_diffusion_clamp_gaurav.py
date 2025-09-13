@@ -110,18 +110,30 @@ print(f" {len(set(peptides))} / {len(peptides)} samples are unique\n")
 # TR Guidance
 ##############################
 trials = [
-    (True, "midpoint", 1.0),
-    (True, "midpoint", 0.1),
-    (True, "midpoint", 0.01),
-    (True, "x0_hat", 1.0),
+    # (True, "midpoint", 0.1),
+    # (True, "midpoint", 0.01),
+    # (True, "midpoint_inc", 0.1),
+    # (True, "midpoint_inc", 0.01),
+    # (True, "midpoint_dec", 0.1),
+    # (True, "midpoint_dec", 0.01),
+    # (False, "midpoint", 0.1),
+    # (False, "midpoint", 0.01),
+    # (False, "midpoint_inc", 0.1),
+    # (False, "midpoint_inc", 0.01),
+    # (False, "midpoint_dec", 0.1),
+    # (False, "midpoint_dec", 0.01),
     (True, "x0_hat", 0.1),
     (True, "x0_hat", 0.01),
-    (False, "midpoint", 1.0),
-    (False, "midpoint", 0.1),
-    (False, "midpoint", 0.01),
-    (False, "x0_hat", 1.0),
+    (True, "x0_hat_inc", 0.1),
+    (True, "x0_hat_inc", 0.01),
+    (True, "x0_hat_dec", 0.1),
+    (True, "x0_hat_dec", 0.01),
     (False, "x0_hat", 0.1),
     (False, "x0_hat", 0.01),
+    (False, "x0_hat_inc", 0.1),
+    (False, "x0_hat_inc", 0.01),
+    (False, "x0_hat_dec", 0.1),
+    (False, "x0_hat_dec", 0.01),
 ]
 
 for tr_clamp, tr_guidance, tr_guidance_scale  in trials:

@@ -49,7 +49,7 @@ class LOLBOState:
         self.task = task
         self.repaint_candidates = repaint_candidates
 
-        assert acq_func in ["ei", "ts", "ddim", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr"]
+        assert acq_func in ["ei", "ts", "ddim", "ddim_tr", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr", "ddim_repaint_tr_guidance"]
         if minimize:
             self.train_y = self.train_y * -1
 

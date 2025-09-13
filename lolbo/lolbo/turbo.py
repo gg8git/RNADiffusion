@@ -65,7 +65,7 @@ def generate_batch(
     dtype=torch.float32,
     device=torch.device("cuda"),
 ):
-    assert acqf in ["ts", "ei", "ddim", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr"]
+    assert acqf in ["ts", "ei", "ddim", "ddim_tr", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr", "ddim_repaint_tr_guidance"]
     
     assert torch.all(torch.isfinite(Y))
     if n_candidates is None:
@@ -115,7 +115,7 @@ def generate_batch(
         thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)
         X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size)
 
-    if acqf == "ddim" or acqf == "ddim_tr_guidance":
+    if acqf == "ddim" or acqf == "ddim_tr" or acqf == "ddim_tr_guidance":
         assert diffusion is not None
 
         log_ei_mod = qLogExpectedImprovement(
@@ -141,6 +141,16 @@ def generate_batch(
                 guidance_scale=1.0,
                 cond_fn=cond_fn_log_ei,
             )
+        
+        if acqf == "ddim_tr":
+            X_next = diffusion.ddim_sample_tr(
+                batch_size=batch_size,
+                sampling_steps=100,
+                guidance_scale=1.0,
+                cond_fn=cond_fn_log_ei,
+                tr_center=x_center.cuda(),
+                tr_halfwidth=weights.cuda() * state.length / 2.0,
+            )
 
         if acqf == "ddim_tr_guidance":
             X_next = diffusion.ddim_sample_tr_guidance(
@@ -155,7 +165,7 @@ def generate_batch(
                 tr_guidance_scale=0.05,
             )
 
-    if acqf == "ddim_repaint" or acqf == "ddim_repaint_tr":
+    if acqf == "ddim_repaint" or acqf == "ddim_repaint_tr" or acqf == "ddim_repaint_tr_guidance":
         dim = X.shape[-1]
         tr_lb = tr_lb.cuda()
         tr_ub = tr_ub.cuda()
@@ -173,14 +183,29 @@ def generate_batch(
 
         X_cand = x_center.expand(repaint_candidates, dim).clone()
 
-        X_cand = diffusion.ddim_repaint(
-            x_known=X_cand.cuda(),
-            mask=mask,
-            sampling_steps=50,
-            u_steps=10,
-            tr_center=x_center.cuda() if acqf == "ddim_repaint_tr" else None,
-            tr_halfwidth=weights.cuda() * state.length / 2.0 if acqf == "ddim_repaint_tr" else None,
-        )
+        if acqf == "ddim_repaint_tr_guidance":
+            X_cand = diffusion.ddim_repaint_tr_guidance(
+                x_known=X_cand.cuda(),
+                mask=mask,
+                sampling_steps=50,
+                u_steps=10,
+                tr_center=x_center.cuda(),
+                tr_halfwidth=weights.cuda() * state.length / 2.0,
+                tr_clamp=False,
+                tr_guidance="midpoint_dec",
+                tr_guidance_scale=0.05,
+            )
+        
+        else:
+            X_cand = diffusion.ddim_repaint(
+                x_known=X_cand.cuda(),
+                mask=mask,
+                sampling_steps=50,
+                u_steps=10,
+                tr_center=x_center.cuda() if acqf == "ddim_repaint_tr" else None,
+                tr_halfwidth=weights.cuda() * state.length / 2.0 if acqf == "ddim_repaint_tr" else None,
+            )
+        
         thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)
         X_next = thompson_sampling(X_cand.cuda(), num_samples=batch_size)
 

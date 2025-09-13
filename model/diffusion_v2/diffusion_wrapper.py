@@ -355,6 +355,170 @@ class DiffusionModel(L.LightningModule):
         return x_t.flatten(1)
     
     @torch.no_grad()
+    def ddim_repaint_tr_guidance(
+        self,
+        x_known: Tensor,
+        mask: Tensor,
+        sampling_steps: int = 50,
+        u_steps: int = 20,
+        tr_center: Tensor | None = None,
+        tr_halfwidth: float | Tensor | None = None,
+        tr_clamp: bool = True,
+        tr_guidance: str | None = None,
+        tr_guidance_scale: float = 1.0,
+    ) -> Tensor:
+        """
+        Re-painting with DDIM: https://arxiv.org/abs/2201.09865
+        A mask value of 1 indicates the value is known and should be preserved.
+        """
+        device = self.device
+        assert self.diffusion.objective == "pred_v", (
+            f"This DDIM sampler only supports pred_v, not {self.diffusion.objective}"
+        )
+        assert u_steps >= 1, "u_steps must be at least 1"
+
+        B = x_known.shape[0]
+
+        # schedule: [T-1, ... 0, -1]
+        times = torch.linspace(-1, self.diffusion.num_timesteps - 1, steps=sampling_steps + 1)
+        times = list(reversed(times.long().tolist()))
+        time_pairs = list(zip(times[:-1], times[1:]))
+
+        x_t = torch.randn((B, self.n_bn, self.d_bn), device=device)
+        x_known = x_known.reshape(B, self.n_bn, self.d_bn).to(device)
+        mask = mask.reshape(B, self.n_bn, self.d_bn).to(device)
+        x_start = None
+
+        if tr_center is not None:
+            tr_center = tr_center.reshape(1, self.n_bn, self.d_bn).to(device)
+        if tr_halfwidth is not None and isinstance(tr_halfwidth, float):
+            tr_halfwidth = torch.full((1, self.n_bn, self.d_bn), tr_halfwidth, device=device)
+        elif tr_halfwidth is not None:
+            tr_halfwidth = tr_halfwidth.reshape(1, self.n_bn, self.d_bn).to(device)  # type: ignore
+
+        for t, t_next in tqdm(time_pairs, desc="DDIM RePaint", leave=False):
+            t_vec = torch.full((B,), t, device=device, dtype=torch.long)
+            t_next_vec = torch.full((B,), t_next, device=device, dtype=torch.long)
+
+            for ustep in range(u_steps):
+                # 1) predict v_t
+                with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+                    v_hat = self.diffusion.model(
+                        x=x_t,
+                        time=t_vec,
+                        x_self_cond=x_start if self.diffusion.self_condition else None,
+                    ).float()
+
+                # v -> x0_hat, eps_hat
+                alpha_bar_t = extract(self.diffusion.alphas_cumprod, t_vec, x_t.shape)
+                A_t = alpha_bar_t.sqrt()
+                B_t = (1.0 - alpha_bar_t).sqrt()
+
+                gradient = torch.zeros_like(x_t)
+                if tr_guidance is not None and tr_center is not None and tr_halfwidth is not None:
+                    if tr_guidance == "midpoint":
+                        tr_center_vec = tr_center.repeat(B, 1, 1)
+                        mean, std = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                        
+                        with torch.enable_grad():
+                            x_t = x_t.detach().requires_grad_(True)
+                            logp = Normal(mean, std).log_prob(x_t)
+
+                            s = logp.sum()
+                            (grad,) = torch.autograd.grad(s, x_t, retain_graph=False, create_graph=False)
+
+                        grad = grad.reshape(x_t.shape)
+                        grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
+
+                        if t < 900:
+                            gradient += ((B_t/A_t) * grad)
+
+                    elif tr_guidance == "midpoint_dec":
+                        tr_center_vec = tr_center.repeat(B, 1, 1)
+                        mean, std = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                        
+                        with torch.enable_grad():
+                            x_t = x_t.detach().requires_grad_(True)
+                            logp = Normal(mean, std).log_prob(x_t)
+
+                            s = logp.sum()
+                            (grad,) = torch.autograd.grad(s, x_t, retain_graph=False, create_graph=False)
+
+                        grad = grad.reshape(x_t.shape)
+                        grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
+
+                        if t < 900:
+                            interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
+                            gradient += ((B_t/A_t) * grad * interpolant)
+
+                    elif tr_guidance == "x0_hat":
+                        _x0_hat = A_t * x_t - B_t * v_hat
+
+                        with torch.enable_grad(): 
+                            _x0_hat = _x0_hat.detach().requires_grad_(True)
+
+                            lower = tr_center - tr_halfwidth
+                            upper = tr_center + tr_halfwidth
+
+                            lam = 0.1 + (50.0 - 0.1) * (1.0 - t_vec.float() / 1000.0)
+                            lam = lam.view(-1, 1).to(_x0_hat.device)
+
+                            low_viol = F.relu(lower - _x0_hat).pow(2)
+                            up_viol  = F.relu(_x0_hat - upper).pow(2)
+                            penalty = (low_viol + up_viol).flatten(1).sum(dim=1)
+
+                            s = (-lam.squeeze() * penalty).sum()
+                            (grad,) = torch.autograd.grad(s, _x0_hat, retain_graph=False, create_graph=False)
+
+                        grad = grad.reshape(x_t.shape)
+                        grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
+
+                        gradient += (B_t * grad)
+
+                v_hat = v_hat - tr_guidance_scale * gradient
+
+                x0_hat = A_t * x_t - B_t * v_hat
+                eps_hat = B_t * x_t + A_t * v_hat
+                x_start = x0_hat
+
+                if t_next < 0:  # final snap enforce known region
+                    x_t = mask * x_known + (1.0 - mask) * x0_hat
+                    break
+
+                # 2) DDIM (eta=0): t -> t_next
+                alpha_bar_next = extract(self.diffusion.alphas_cumprod, t_next_vec, x_t.shape)
+                x_t_unk = alpha_bar_next.sqrt() * x0_hat + (1.0 - alpha_bar_next).sqrt() * eps_hat
+
+                # 3) RePaint mix at t_next
+                x_t_knw = self.diffusion.q_sample(x_known, t=t_next_vec, noise=torch.randn_like(x_t) * (t_next > 0))
+
+                x_tm1 = (1.0 - mask) * x_t_unk + mask * x_t_knw
+
+                # 4) If more inner loops forward re-noise x_{t_next} -> x_t
+                if ustep < u_steps - 1:
+                    ratio = (alpha_bar_t / alpha_bar_next).clamp(min=0.0, max=1.0)
+                    _z = torch.randn_like(x_tm1) if t > 0 else torch.zeros_like(x_tm1)
+                    x_t = ratio.sqrt() * x_tm1 + (1.0 - ratio).sqrt() * _z
+                else:
+                    x_t = x_tm1
+
+                if tr_clamp and tr_center is not None and tr_halfwidth is not None:
+                    # Interpolate between a half-width of 6 at t=T to the given half-width at t=0
+                    interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
+                    hw_t = tr_halfwidth * (1 - interpolant) + 6.0 * interpolant
+
+                    eps = 1e-3
+                    x_t = tr_center + (hw_t - eps) * torch.tanh((x_t - tr_center) / (hw_t - eps))
+
+        # Finally, clamp
+        if tr_center is not None and tr_halfwidth is not None:
+            lower_0 = tr_center - tr_halfwidth
+            upper_0 = tr_center + tr_halfwidth
+            x_t = x_t.clamp(min=lower_0, max=upper_0)
+
+        return x_t.flatten(1)
+    
+    @torch.no_grad()
     def ddim_sample_tr_guidance(
         self,
         batch_size: int,

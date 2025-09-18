@@ -6,7 +6,7 @@ import torch
 from gpytorch.mlls import PredictiveLogLikelihood
 
 from model import GPModelDKL
-from model.diffusion_v2 import DiffusionModel
+from model.diffusion_v2 import DiffusionModel, ExtinctPredictor
 
 from .turbo import TurboState, generate_batch, update_state
 from .utils import update_models_end_to_end, update_surr_model
@@ -26,6 +26,7 @@ class LOLBOState:
         learning_rte=0.01,
         bsz=10,
         acq_func="ts",
+        sample_extinct=False,
         use_dsp=False,
         verbose=True,
         task="molecule",
@@ -44,12 +45,15 @@ class LOLBOState:
         self.learning_rte = learning_rte  # lr to use for model updates
         self.bsz = bsz  # acquisition batch size
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
+        self.sample_extinct = sample_extinct
         self.use_dsp = use_dsp
         self.verbose = verbose
         self.task = task
         self.repaint_candidates = repaint_candidates
 
         assert acq_func in ["ei", "ts", "ddim", "ddim_tr", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr", "ddim_repaint_tr_guidance"]
+        assert not sample_extinct or acq_func in ["ddim_repaint", "ddim_repaint_tr"]
+        assert not sample_extinct or task == "peptide"
         if minimize:
             self.train_y = self.train_y * -1
 
@@ -124,6 +128,10 @@ class LOLBOState:
         self.diffusion = DiffusionModel.load_from_checkpoint(ckpt_path)
         self.diffusion.eval().cuda()
         self.diffusion.freeze()
+
+        if self.sample_extinct:
+            predictor = ExtinctPredictor.load_from_checkpoint("./data/extinct_predictor.ckpt")
+            self.diffusion.predictor = predictor.cuda().freeze()
 
     def update_next(self, z_next_, y_next_, x_next_, acquisition=False):
         """Add new points (z_next, y_next, x_next) to train data
@@ -257,6 +265,7 @@ class LOLBOState:
             Y=self.train_y,
             batch_size=self.bsz,
             acqf=self.acq_func,
+            sample_extinct=self.sample_extinct,
             use_dsp=self.use_dsp,
             diffusion=self.diffusion,
             repaint_candidates=self.repaint_candidates,

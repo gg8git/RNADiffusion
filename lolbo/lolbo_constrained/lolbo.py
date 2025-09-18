@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from gpytorch.mlls import PredictiveLogLikelihood
 
-from model.diffusion_v2 import DiffusionModel
+from model.diffusion_v2 import DiffusionModel, ExtinctPredictor
 from model.surrogate_model import GPModelDKL
 
 from .turbo import TurboStateConstrained, generate_batch, update_state
@@ -32,6 +32,7 @@ class LOLBOStateConstrained:
         learning_rte=0.01,
         bsz=10,
         acq_func="ts",
+        sample_extinct=False,
         use_dsp=False,
         verbose=True,
         task="molecule",
@@ -51,12 +52,15 @@ class LOLBOStateConstrained:
         self.learning_rte = learning_rte  # lr to use for model updates
         self.bsz = bsz  # acquisition batch size
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
+        self.sample_extinct = sample_extinct
         self.use_dsp = use_dsp
         self.verbose = verbose
         self.task = task
         self.repaint_candidates = repaint_candidates  # number of candidates to repaint when using ddim with repainting
 
         assert acq_func in ["ts", "ei", "ddim", "ddim_tr", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr", "ddim_repaint_tr_guidance"]
+        assert not sample_extinct or acq_func in ["ddim_repaint", "ddim_repaint_tr"]
+        assert not sample_extinct or task == "peptide"
         if minimize:
             self.train_y = self.train_y * -1
 
@@ -206,6 +210,10 @@ class LOLBOStateConstrained:
         self.diffusion = DiffusionModel.load_from_checkpoint(ckpt_path)
         self.diffusion.eval().cuda()
         self.diffusion.freeze()
+
+        if self.sample_extinct:
+            predictor = ExtinctPredictor.load_from_checkpoint("./data/extinct_predictor.ckpt")
+            self.diffusion.predictor = predictor.cuda().freeze()
 
     def update_next(self, z_next_, y_next_, x_next_, c_next_=None, acquisition=False):
         """Add new points (z_next, y_next, x_next) to train data
@@ -465,6 +473,7 @@ class LOLBOStateConstrained:
             Y=self.train_y,
             batch_size=self.bsz,
             acqf=self.acq_func,
+            sample_extinct=self.sample_extinct,
             use_dsp=self.use_dsp,
             diffusion=self.diffusion,
             absolute_bounds=(self.objective.lb, self.objective.ub),

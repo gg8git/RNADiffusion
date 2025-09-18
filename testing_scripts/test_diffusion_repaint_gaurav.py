@@ -18,9 +18,6 @@ torch.set_printoptions(sci_mode=False, precision=3, linewidth=120)
 RDLogger.DisableLog("rdApp.*")  # type: ignore
 
 
-##########################################################
-# Peptide
-##########################################################
 model = DiffusionModel.load_from_checkpoint("./data/peptide_diffusion.ckpt")
 model.cuda()
 model.freeze()
@@ -29,19 +26,8 @@ predictor = ExtinctPredictor.load_from_checkpoint("./data/extinct_predictor.ckpt
 predictor.cuda()
 predictor.freeze()
 
+model.predictor = predictor
 
-def cond_fn_extinct(z: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-    with torch.enable_grad():
-        z = z.detach().requires_grad_(True)
-        logits = predictor(z.view(z.shape[0], -1))
-        logp = F.logsigmoid(logits)
-        if logp.dim() > 1:
-            logp = logp.sum(dim=tuple(range(1, logp.dim())))
-        s = logp.sum()
-        (grad_z,) = torch.autograd.grad(s, z, retain_graph=False, create_graph=False)
-    return grad_z.detach()
-
-# fmt: off
 TRC = torch.tensor([-0.254,  0.918,  0.553,  0.263, -2.132, -0.162,  2.220,  1.129,  0.346, -0.604,  1.344,  1.299,  1.409,  0.185,
          1.178, -0.041, -1.069, -0.972,  0.571,  0.214,  0.595,  1.887,  0.870,  1.522, -0.034,  0.515, -0.324, -0.173,
         -1.410,  1.013, -0.977,  0.701, -1.629,  0.724,  1.066, -0.083, -0.575,  1.176,  0.227, -0.764,  1.210, -0.216,
@@ -61,39 +47,40 @@ TRC = torch.tensor([-0.254,  0.918,  0.553,  0.263, -2.132, -0.162,  2.220,  1.1
          0.127,  1.084, -1.237,  0.008,  1.431, -0.037, -1.428,  0.795,  1.708,  1.110,  0.728,  0.880, -0.647,  0.772,
          0.621, -0.883,  0.342, -0.805,  1.078, -0.275, -0.489,  0.637,  0.873, -0.162, -1.488, -0.758,  0.117,  0.884,
         -1.072,  0.374, -0.449, -1.410], device='cuda:0').unsqueeze(0)
-# fmt: on
 
-TRHW = 0.2
+TRC = torch.ones(256).to(torch.float32).cuda().unsqueeze(0)
 
-# want to compare performance of diff algorithms against different TRs
+N = 1024
+x_known = TRC.repeat(N, 1).view(N, model.n_bn, model.d_bn)
+mask = (torch.rand_like(x_known) > 0.2).float()
 
-# TRHWS = [2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.01]
-TRHWS = [1.6, 0.8, 0.4, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625]
+repaint_mask_z = model.ddim_repaint(
+    x_known=x_known,
+    mask=mask,
+    sampling_steps=50,
+    u_steps=20,
+)
 
-for trhw in TRHWS:
-    for method in ["midpoint_hw_scaled", "midpoint_hw"]:
-        trials = [
-            (False, method, 2.0),
-        ]
+extinct_preds_guide_mask = (predictor(repaint_mask_z).sigmoid() > 0.5).float()
+print(f"Guide No Cond: {extinct_preds_guide_mask.mean():.3f} +/- {extinct_preds_guide_mask.std():.3f}")
+_tmp = torch.stack([x_known[0].flatten(), repaint_mask_z[0], mask[0].flatten()], dim=0)
+print(_tmp[:, :10])
 
-        for tr_clamp, tr_guidance, tr_guidance_scale in trials:
-            print(f"Results - (halfwidth: {trhw}, guidance method: {method}, scale: {tr_guidance_scale})")
 
-            guide_z = model.ddim_sample_tr_guidance(
-                batch_size=1024,
-                sampling_steps=500,
-                cond_fn=cond_fn_extinct,
-                guidance_scale=1.0,
-                tr_center=TRC,
-                tr_halfwidth=trhw,
-                tr_clamp=tr_clamp,
-                tr_guidance=tr_guidance,
-                tr_guidance_scale=tr_guidance_scale,
-            )
+for guidance_scale in [1.0, 2.0, 4.0, 6.0, 8.0]:
+    for threshold in [0.2, 0.5, 0.8]:
+        mask = (torch.rand_like(x_known) > threshold).float()
 
-            extinct_preds_guide = (predictor(guide_z).sigmoid() > 0.5).float()
-            print(f"Extinct %: {extinct_preds_guide.mean():.3f} +/- {extinct_preds_guide.std():.3f} ")
-            print(f"Avg dist from center: {(guide_z - TRC).abs().mean():.6f}, std: {(guide_z - TRC).abs().std():.3f}")
+        guide_mask_z = model.ddim_repaint(
+            x_known=x_known,
+            mask=mask,
+            sampling_steps=50,
+            u_steps=20,
+            sample_extinct=True,
+            extinct_guidance_scale=guidance_scale,
+        )
 
-            peptides = model.vae.detokenize(model.vae.sample(guide_z, argmax=False))
-            print(f"Sample peptides from guided diffusion: {len(set(peptides))} / {len(peptides)} samples are unique\n")
+        extinct_preds_guide_mask = (predictor(guide_mask_z).sigmoid() > 0.5).float()
+        print(f"Guide Extinct (scale: {guidance_scale}, threshold: {threshold}): {extinct_preds_guide_mask.mean():.3f} +/- {extinct_preds_guide_mask.std():.3f}")
+        _tmp = torch.stack([x_known[0].flatten(), guide_mask_z[0], mask[0].flatten()], dim=0)
+        # print(_tmp[:, :10])

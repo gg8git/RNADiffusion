@@ -1,6 +1,7 @@
 from model.diffusion_v2.diffusion_datamodule import DataType as DataType
 from model.diffusion_v2.diffusion_datamodule import DiffusionDataModule as DiffusionDataModule
 from model.diffusion_v2.diffusion_wrapper import DiffusionModel as DiffusionModel
+from model.diffusion_v2.diffusion_wrapper import ExtinctPredictor as ExtinctPredictor
 from model.diffusion_v2.diffusion_wrapper import PredType as PredType
 from model.diffusion_v2.diffusion_wrapper_extended import DiffusionModelExtended
 from model.diffusion_v2.vae import BaseVAE as BaseVAE

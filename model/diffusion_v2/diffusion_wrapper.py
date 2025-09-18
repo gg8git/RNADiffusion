@@ -1,4 +1,5 @@
 import math
+from typing import List
 from collections.abc import Callable
 
 import lightning as L
@@ -9,7 +10,7 @@ from torch import Tensor
 from torch.distributions import Normal
 from tqdm.auto import tqdm
 
-from model.diffusion_v2.GaussianDiffusion import GaussianDiffusion1D, PredType, Unet1D, extract
+from model.diffusion_v2.GaussianDiffusion import GaussianDiffusion1D, PredType, Unet1D, extract, ExtinctPredictor
 from model.diffusion_v2.vae import BaseVAE
 
 
@@ -42,6 +43,8 @@ class DiffusionModel(L.LightningModule):
             timesteps=1000,
             objective=pred_type,
         )
+
+        self.predictor = None
 
     # @torch.compile
     def _train_forward(self, seq: Tensor) -> Tensor:
@@ -169,6 +172,17 @@ class DiffusionModel(L.LightningModule):
             x_start = x0_hat
 
         return x_t.flatten(1)
+    
+    def cond_fn_extinct(self, z: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        with torch.enable_grad():
+            z = z.detach().requires_grad_(True)
+            logits = self.predictor(z.view(z.shape[0], -1))
+            logp = F.logsigmoid(logits)
+            if logp.dim() > 1:
+                logp = logp.sum(dim=tuple(range(1, logp.dim())))
+            s = logp.sum()
+            (grad_z,) = torch.autograd.grad(s, z, retain_graph=False, create_graph=False)
+        return grad_z.detach()
 
     @torch.no_grad()
     def ddim_repaint(
@@ -179,6 +193,8 @@ class DiffusionModel(L.LightningModule):
         u_steps: int = 20,
         tr_center: Tensor | None = None,
         tr_halfwidth: float | Tensor | None = None,
+        sample_extinct: bool = False,
+        extinct_guidance_scale: float = 1.0,
     ) -> Tensor:
         """
         Re-painting with DDIM: https://arxiv.org/abs/2201.09865
@@ -226,6 +242,15 @@ class DiffusionModel(L.LightningModule):
                 alpha_bar_t = extract(self.diffusion.alphas_cumprod, t_vec, x_t.shape)
                 A_t = alpha_bar_t.sqrt()
                 B_t = (1.0 - alpha_bar_t).sqrt()
+
+                if sample_extinct:
+                    _x0_hat = A_t * x_t - B_t * v_hat
+
+                    grad = self.cond_fn_extinct(_x0_hat.flatten(1), t_vec)
+                    grad = grad.reshape(x_t.shape)
+                    grad = clip_max_grad(grad, 6 * math.sqrt(self.n_bn * self.d_bn))  # Keep gradient in [-6, 6] ball
+
+                    v_hat = v_hat - B_t * grad * extinct_guidance_scale
 
                 x0_hat = A_t * x_t - B_t * v_hat
                 eps_hat = B_t * x_t + A_t * v_hat
@@ -528,7 +553,7 @@ class DiffusionModel(L.LightningModule):
         tr_center: Tensor | None = None,
         tr_halfwidth: float | Tensor | None = None,
         tr_clamp: bool = True,
-        tr_guidance: str | None = None,
+        tr_guidance: List[str] | str | None = None,
         tr_guidance_scale: float = 1.0,
     ) -> torch.Tensor:
         device = self.device
@@ -537,6 +562,8 @@ class DiffusionModel(L.LightningModule):
         )
         if tr_center is not None:
             tr_center = tr_center.reshape(1, self.n_bn, self.d_bn).to(device)
+        if isinstance(tr_guidance, str):
+            tr_guidance = [tr_guidance]
 
         # time schedule: [T-1, ... 1, 0, -1]
         times = torch.linspace(-1, self.diffusion.num_timesteps - 1, steps=sampling_steps + 1)
@@ -573,7 +600,9 @@ class DiffusionModel(L.LightningModule):
                 gradient += (B * grad)
             
             if tr_guidance is not None and tr_center is not None and tr_halfwidth is not None:
-                if tr_guidance == "midpoint":
+                if "midpoint_base" in tr_guidance:
+                    interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
+
                     tr_center_vec = tr_center.repeat(batch_size, 1, 1)
                     mean, std = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
                     
@@ -591,9 +620,13 @@ class DiffusionModel(L.LightningModule):
                     if t < 900:
                         gradient += ((B/A) * grad * tr_guidance_scale)
                 
-                elif tr_guidance == "midpoint_inc":
+                elif "midpoint_hw" in tr_guidance:
+                    reverse_interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[1000 - t]
+                    hw_t = tr_halfwidth * reverse_interpolant + 10.0 * (1 - reverse_interpolant)
+
                     tr_center_vec = tr_center.repeat(batch_size, 1, 1)
-                    mean, std = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                    mean, _ = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                    std = hw_t
                     
                     with torch.enable_grad():
                         x_t = x_t.detach().requires_grad_(True)
@@ -603,16 +636,42 @@ class DiffusionModel(L.LightningModule):
                         (grad,) = torch.autograd.grad(s, x_t, retain_graph=False, create_graph=False)
 
                     grad = grad.reshape(x_t.shape)
-                    grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
+                    grad = clip_max_grad(grad.detach(), 10 * math.sqrt(self.n_bn * self.d_bn))
 
                     # v_hat = v_hat - (B/A) * grad * guidance_scale
                     if t < 900:
-                        interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
-                        gradient += ((B/A) * grad * tr_guidance_scale * (1.0 - interpolant))
+                        gradient += ((B/A) * grad * tr_guidance_scale)
                 
-                elif tr_guidance == "midpoint_dec":
+                elif "midpoint_hw_scaled" in tr_guidance:
+                    reverse_interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[1000 - t]
+                    hw_t = tr_halfwidth * reverse_interpolant + 10.0 * (1 - reverse_interpolant)
+
                     tr_center_vec = tr_center.repeat(batch_size, 1, 1)
-                    mean, std = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                    mean, _ = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                    # std = 0.03 * torch.exp(5 * hw_t)
+                    std = 0.08 * torch.exp(3 ** hw_t)
+                    
+                    with torch.enable_grad():
+                        x_t = x_t.detach().requires_grad_(True)
+                        logp = Normal(mean, std).log_prob(x_t)
+
+                        s = logp.sum()
+                        (grad,) = torch.autograd.grad(s, x_t, retain_graph=False, create_graph=False)
+
+                    grad = grad.reshape(x_t.shape)
+                    grad = clip_max_grad(grad.detach(), 10 * math.sqrt(self.n_bn * self.d_bn))
+
+                    # v_hat = v_hat - (B/A) * grad * guidance_scale
+                    if t < 900:
+                        gradient += ((B/A) * grad * tr_guidance_scale)
+                
+                elif "midpoint_dec" in tr_guidance:
+                    interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
+                    hw_t = tr_halfwidth * (1 - interpolant) + 6.0 * interpolant
+
+                    tr_center_vec = tr_center.repeat(batch_size, 1, 1)
+                    mean, base_std = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                    std = (hw_t / 2) * (1 - interpolant) + base_std * interpolant
                     
                     with torch.enable_grad():
                         x_t = x_t.detach().requires_grad_(True)
@@ -629,14 +688,17 @@ class DiffusionModel(L.LightningModule):
                         interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
                         gradient += ((B/A) * grad * tr_guidance_scale * interpolant)
 
-                elif tr_guidance == "x0_hat":
+                elif "x0_hat" in tr_guidance:
                     _x0_hat = A * x_t - B * v_hat
+
+                    reverse_interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[1000 - t]
+                    hw_t = tr_halfwidth * reverse_interpolant + 10.0 * (1 - reverse_interpolant)
 
                     with torch.enable_grad(): 
                         _x0_hat = _x0_hat.detach().requires_grad_(True)
 
-                        lower = tr_center - tr_halfwidth
-                        upper = tr_center + tr_halfwidth
+                        lower = tr_center - hw_t
+                        upper = tr_center + hw_t
 
                         lam = 0.1 + (50.0 - 0.1) * (1.0 - t_vec.float() / 1000.0)
                         lam = lam.view(-1, 1).to(_x0_hat.device)
@@ -654,33 +716,7 @@ class DiffusionModel(L.LightningModule):
                     # v_hat = v_hat - B * grad * guidance_scale
                     gradient += (B * grad * tr_guidance_scale)
                 
-                elif tr_guidance == "x0_hat_inc":
-                    _x0_hat = A * x_t - B * v_hat
-
-                    with torch.enable_grad(): 
-                        _x0_hat = _x0_hat.detach().requires_grad_(True)
-
-                        lower = tr_center - tr_halfwidth
-                        upper = tr_center + tr_halfwidth
-
-                        lam = 0.1 + (50.0 - 0.1) * (1.0 - t_vec.float() / 1000.0)
-                        lam = lam.view(-1, 1).to(_x0_hat.device)
-
-                        low_viol = F.relu(lower - _x0_hat).pow(2)
-                        up_viol  = F.relu(_x0_hat - upper).pow(2)
-                        penalty = (low_viol + up_viol).flatten(1).sum(dim=1)
-
-                        s = (-lam.squeeze() * penalty).sum()
-                        (grad,) = torch.autograd.grad(s, _x0_hat, retain_graph=False, create_graph=False)
-
-                    grad = grad.reshape(x_t.shape)
-                    grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
-
-                    # v_hat = v_hat - B * grad * guidance_scale
-                    interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
-                    gradient += (B * grad * tr_guidance_scale * (1.0 - interpolant))
-                
-                elif tr_guidance == "x0_hat_dec":
+                elif "x0_hat_dec" in tr_guidance:
                     _x0_hat = A * x_t - B * v_hat
 
                     with torch.enable_grad(): 
@@ -705,36 +741,6 @@ class DiffusionModel(L.LightningModule):
                     # v_hat = v_hat - B * grad * guidance_scale
                     interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
                     gradient += (B * grad * tr_guidance_scale * interpolant)
-                                
-                elif tr_guidance == "sampled_points":
-                    num_samples = 8
-
-                    lower = tr_center - tr_halfwidth
-                    upper = tr_center + tr_halfwidth
-
-                    for _ in range(num_samples):
-                        u = torch.rand_like(tr_center)
-                        sample = lower + (upper - lower) * u
-
-                        sample_vec = sample.repeat(batch_size, 1, 1)
-                        mean, std = self.diffusion.q_sample_dist(sample_vec, t_vec)
-                        
-                        with torch.enable_grad():
-                            x_t = x_t.detach().requires_grad_(True)
-                            logp = Normal(mean, std).log_prob(x_t)
-
-                            s = logp.sum()
-                            (grad,) = torch.autograd.grad(s, x_t, retain_graph=False, create_graph=False)
-
-                        grad = grad.reshape(x_t.shape)
-                        grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
-
-                        # v_hat = v_hat - (B/A) * grad * guidance_scale
-                        if t < 900:
-                            gradient += ((B/A) * grad * tr_guidance_scale / num_samples)
-                    
-                elif tr_guidance == "boundary_points":
-                    pass
             
             v_hat = v_hat - guidance_scale * gradient
 
@@ -768,10 +774,10 @@ class DiffusionModel(L.LightningModule):
                 # tqdm.write(f"t={t}, hw_t={hw_t:.3f} | {avg:.3f} / {x_t.flatten(1).shape[1]} on boundary")
 
         # Finally, clamp
-        if tr_center is not None and tr_halfwidth is not None:
-            lower_0 = tr_center - tr_halfwidth
-            upper_0 = tr_center + tr_halfwidth
-            x_t = x_t.clamp(min=lower_0, max=upper_0)
+        # if tr_center is not None and tr_halfwidth is not None:
+        #     lower_0 = tr_center - tr_halfwidth
+        #     upper_0 = tr_center + tr_halfwidth
+        #     x_t = x_t.clamp(min=lower_0, max=upper_0)
 
         return x_t.flatten(1)
 

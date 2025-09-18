@@ -60,12 +60,14 @@ def generate_batch(
     num_restarts=10,
     raw_samples=256,
     acqf="ts",  # "ei" or "ts" or "ddim"
+    sample_extinct=False,
     use_dsp=False,
     diffusion=None,
     dtype=torch.float32,
     device=torch.device("cuda"),
 ):
     assert acqf in ["ts", "ei", "ddim", "ddim_tr", "ddim_tr_guidance", "ddim_repaint", "ddim_repaint_tr", "ddim_repaint_tr_guidance"]
+    assert not sample_extinct or acqf in ["ddim_repaint", "ddim_repaint_tr"]
     
     assert torch.all(torch.isfinite(Y))
     if n_candidates is None:
@@ -204,6 +206,8 @@ def generate_batch(
                 u_steps=10,
                 tr_center=x_center.cuda() if acqf == "ddim_repaint_tr" else None,
                 tr_halfwidth=weights.cuda() * state.length / 2.0 if acqf == "ddim_repaint_tr" else None,
+                sample_extinct=sample_extinct,
+                extinct_guidance_scale=5.0,
             )
         
         thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)

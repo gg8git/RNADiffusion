@@ -116,30 +116,36 @@ trials = [
     # (True, "midpoint_inc", 0.01),
     # (True, "midpoint_dec", 0.1),
     # (True, "midpoint_dec", 0.01),
-    # (False, "midpoint", 0.1),
+    # (False, "midpoint", 1.0),
+    # # (False, "midpoint", 0.1),
     # (False, "midpoint", 0.01),
-    # (False, "midpoint_inc", 0.1),
+    # (False, "midpoint_inc", 1.0),
+    # # (False, "midpoint_inc", 0.1),
     # (False, "midpoint_inc", 0.01),
+    # (False, "midpoint_dec", 1.0),
     # (False, "midpoint_dec", 0.1),
     # (False, "midpoint_dec", 0.01),
-    (True, "x0_hat", 0.1),
-    (True, "x0_hat", 0.01),
-    (True, "x0_hat_inc", 0.1),
-    (True, "x0_hat_inc", 0.01),
-    (True, "x0_hat_dec", 0.1),
-    (True, "x0_hat_dec", 0.01),
-    (False, "x0_hat", 0.1),
-    (False, "x0_hat", 0.01),
-    (False, "x0_hat_inc", 0.1),
-    (False, "x0_hat_inc", 0.01),
-    (False, "x0_hat_dec", 0.1),
-    (False, "x0_hat_dec", 0.01),
+    # (True, "x0_hat", 0.1),
+    # (True, "x0_hat", 0.01),
+    # (True, "x0_hat_inc", 0.1),
+    # (True, "x0_hat_inc", 0.01),
+    # (True, "x0_hat_dec", 0.1),
+    # (True, "x0_hat_dec", 0.01),
+    # (False, "x0_hat", 0.1),
+    # (False, "x0_hat", 0.01),
+    # (False, "x0_hat_inc", 0.1),
+    # (False, "x0_hat_inc", 0.01),
+    # (False, "x0_hat_dec", 0.1),
+    # (False, "x0_hat_dec", 0.01),
+    # (True, ["none"], 1.0),
+    # (False, ["midpoint", "x0_hat"], 1.0)
+    # (False, "midpoint_hw", 1.0)
 ]
 
 for tr_clamp, tr_guidance, tr_guidance_scale  in trials:
     guide_z = model.ddim_sample_tr_guidance(
         batch_size=1024,
-        sampling_steps=200,
+        sampling_steps=50,
         cond_fn=cond_fn_extinct,
         guidance_scale=1.0,
         tr_center=TRC,
@@ -169,8 +175,58 @@ for tr_clamp, tr_guidance, tr_guidance_scale  in trials:
     count = inside_boundary.flatten(1).all(dim=1).sum()
     print(f"Average number of points within boundary: {count:.0f} / {guide_z.shape[0]}")
 
-    print(f"Avg dist from center: {(guide_z - TRC).abs().mean():.3f}")
+    print(f"Avg dist from center: {(guide_z - TRC).abs().mean():.3f}, std: {(guide_z - TRC).abs().std():.3f}")
 
     peptides = model.vae.detokenize(model.vae.sample(guide_z))
     print("Sample peptides from guided diffusion:")
     print(f" {len(set(peptides))} / {len(peptides)} samples are unique\n")
+
+
+##############################
+# TR Guidance 2
+##############################
+
+# want to compare performance of diff algorithms against different TRs
+
+# TRHWS = [2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.01]
+TRHWS = [1.6, 0.8, 0.4, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625]
+
+for trhw in TRHWS:
+    print(f"Halfwidth: {trhw}")
+
+    # for method in ["midpoint_base", "midpoint_hw", "midpoint_base_hw", "x0_hat"]:
+    for method in ["midpoint_hw_scaled"]:
+        print(f"Method: {method}")
+
+        trials = [
+            # (False, method, 5.0),
+            (False, method, 2.0),
+            # (False, method, 1.0),
+            # (False, method, 0.1),
+            # (False, method, 0.01),
+            # (False, method, 0.002),
+        ]
+
+        for tr_clamp, tr_guidance, tr_guidance_scale in trials:
+            print(f"Results: {tr_guidance_scale}")
+
+            guide_z = model.ddim_sample_tr_guidance(
+                batch_size=1024,
+                sampling_steps=500,
+                cond_fn=cond_fn_extinct,
+                guidance_scale=1.0,
+                tr_center=TRC,
+                tr_halfwidth=trhw,
+                tr_clamp=tr_clamp,
+                tr_guidance=tr_guidance,
+                tr_guidance_scale=tr_guidance_scale,
+            )
+
+            extinct_preds_guide = (predictor(guide_z).sigmoid() > 0.5).float()
+            print(f"Extinct %: {extinct_preds_guide.mean():.3f} +/- {extinct_preds_guide.std():.3f} ")
+            print(f"Avg dist from center: {(guide_z - TRC).abs().mean():.6f}, std: {(guide_z - TRC).abs().std():.3f}")
+
+            peptides = model.vae.detokenize(model.vae.sample(guide_z, argmax=False))
+            print(f"Sample peptides from guided diffusion: {len(set(peptides))} / {len(peptides)} samples are unique\n")
+
+

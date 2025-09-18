@@ -328,7 +328,7 @@ def generate_batch(
                 tr_center=x_center.cuda() if acqf == "ddim_repaint_tr" else None,
                 tr_halfwidth=weights.cuda() * state.length / 2.0 if acqf == "ddim_repaint_tr" else None,
                 sample_extinct=sample_extinct,
-                extinct_guidance_scale=5.0,
+                extinct_guidance_scale=20.0,
             )
         
         thompson_sampling = MaxPosteriorSampling(

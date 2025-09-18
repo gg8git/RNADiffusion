@@ -195,6 +195,7 @@ class Optimize:
                 learning_rte=learning_rte,
                 bsz=bsz,
                 acq_func=acq_func,
+                sample_extinct=sample_extinct,
                 use_dsp=use_dsp,
                 verbose=verbose,
                 task=self.task,

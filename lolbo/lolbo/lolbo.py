@@ -131,7 +131,9 @@ class LOLBOState:
 
         if self.sample_extinct:
             predictor = ExtinctPredictor.load_from_checkpoint("./data/extinct_predictor.ckpt")
-            self.diffusion.predictor = predictor.cuda().freeze()
+            predictor.eval().cuda()
+            predictor.freeze()
+            self.diffusion.predictor = predictor
 
     def update_next(self, z_next_, y_next_, x_next_, acquisition=False):
         """Add new points (z_next, y_next, x_next) to train data

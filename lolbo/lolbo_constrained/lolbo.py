@@ -33,6 +33,7 @@ class LOLBOStateConstrained:
         bsz=10,
         acq_func="ts",
         sample_extinct=False,
+        extinct_guidance_scale=extinct_guidance_scale,
         use_dsp=False,
         verbose=True,
         task="molecule",
@@ -53,6 +54,7 @@ class LOLBOStateConstrained:
         self.bsz = bsz  # acquisition batch size
         self.acq_func = acq_func  # acquisition function (Expected Improvement (ei) or Thompson Sampling (ts))
         self.sample_extinct = sample_extinct
+        self.extinct_guidance_scale = extinct_guidance_scale
         self.use_dsp = use_dsp
         self.verbose = verbose
         self.task = task
@@ -474,6 +476,7 @@ class LOLBOStateConstrained:
             batch_size=self.bsz,
             acqf=self.acq_func,
             sample_extinct=self.sample_extinct,
+            extinct_guidance_scale=self.extinct_guidance_scale,
             use_dsp=self.use_dsp,
             diffusion=self.diffusion,
             absolute_bounds=(self.objective.lb, self.objective.ub),

@@ -61,6 +61,7 @@ def generate_batch(
     raw_samples=256,
     acqf="ts",  # "ei" or "ts" or "ddim"
     sample_extinct=False,
+    extinct_guidance_scale=1.0,
     use_dsp=False,
     diffusion=None,
     dtype=torch.float32,
@@ -207,7 +208,7 @@ def generate_batch(
                 tr_center=x_center.cuda() if acqf == "ddim_repaint_tr" else None,
                 tr_halfwidth=weights.cuda() * state.length / 2.0 if acqf == "ddim_repaint_tr" else None,
                 sample_extinct=sample_extinct,
-                extinct_guidance_scale=20.0,
+                extinct_guidance_scale=extinct_guidance_scale,
             )
         
         thompson_sampling = MaxPosteriorSampling(model=model, replacement=False)

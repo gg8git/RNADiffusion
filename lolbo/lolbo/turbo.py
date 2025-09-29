@@ -195,8 +195,10 @@ def generate_batch(
                 tr_center=x_center.cuda(),
                 tr_halfwidth=weights.cuda() * state.length / 2.0,
                 tr_clamp=False,
-                tr_guidance="midpoint_dec",
+                tr_guidance="midpoint_hw",
                 tr_guidance_scale=0.05,
+                sample_extinct=sample_extinct,
+                extinct_guidance_scale=extinct_guidance_scale,
             )
         
         else:

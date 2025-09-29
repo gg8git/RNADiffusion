@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from rdkit import RDLogger
+from torch.quasirandom import SobolEngine
 
 from model.diffusion_v2 import DiffusionModel
 from model.diffusion_v2.GaussianDiffusion import ExtinctPredictor
@@ -48,7 +49,8 @@ TRC = torch.tensor([-0.254,  0.918,  0.553,  0.263, -2.132, -0.162,  2.220,  1.1
          0.621, -0.883,  0.342, -0.805,  1.078, -0.275, -0.489,  0.637,  0.873, -0.162, -1.488, -0.758,  0.117,  0.884,
         -1.072,  0.374, -0.449, -1.410], device='cuda:0').unsqueeze(0)
 
-TRC = torch.ones(256).to(torch.float32).cuda().unsqueeze(0)
+TRC_ONES = torch.ones(256).to(torch.float32).cuda().unsqueeze(0)
+TRC_RAND = torch.rand(256, dtype=torch.float32, device="cuda").unsqueeze(0)
 
 N = 1024
 x_known = TRC.repeat(N, 1).view(N, model.n_bn, model.d_bn)
@@ -67,20 +69,170 @@ _tmp = torch.stack([x_known[0].flatten(), repaint_mask_z[0], mask[0].flatten()],
 print(_tmp[:, :10])
 
 
-for guidance_scale in [1.0, 2.0, 4.0, 6.0, 8.0]:
-    for threshold in [0.2, 0.5, 0.8]:
-        mask = (torch.rand_like(x_known) > threshold).float()
+# for guidance_scale in [1.0, 2.0, 4.0, 6.0, 8.0]:
+#     for threshold in [0.2, 0.5, 0.8]:
+#         mask = (torch.rand_like(x_known) > threshold).float()
 
-        guide_mask_z = model.ddim_repaint(
-            x_known=x_known,
-            mask=mask,
-            sampling_steps=50,
-            u_steps=20,
-            sample_extinct=True,
-            extinct_guidance_scale=guidance_scale,
-        )
+#         guide_mask_z = model.ddim_repaint(
+#             x_known=x_known,
+#             mask=mask,
+#             sampling_steps=50,
+#             u_steps=20,
+#             sample_extinct=True,
+#             extinct_guidance_scale=guidance_scale,
+#         )
 
-        extinct_preds_guide_mask = (predictor(guide_mask_z).sigmoid() > 0.5).float()
-        print(f"Guide Extinct (scale: {guidance_scale}, threshold: {threshold}): {extinct_preds_guide_mask.mean():.3f} +/- {extinct_preds_guide_mask.std():.3f}")
-        _tmp = torch.stack([x_known[0].flatten(), guide_mask_z[0], mask[0].flatten()], dim=0)
-        # print(_tmp[:, :10])
+#         extinct_preds_guide_mask = (predictor(guide_mask_z).sigmoid() > 0.5).float()
+#         print(f"Guide Extinct (scale: {guidance_scale}, threshold: {threshold}): {extinct_preds_guide_mask.mean():.3f} +/- {extinct_preds_guide_mask.std():.3f}")
+#         _tmp = torch.stack([x_known[0].flatten(), guide_mask_z[0], mask[0].flatten()], dim=0)
+#         # print(_tmp[:, :10])
+
+
+################
+### TS
+################
+
+TRHW = 0.5
+repaint_candidates = 128
+dtype = torch.float32
+# device = torch.cuda
+
+tr_lb = TRC - TRHW
+tr_ub = TRC + TRHW
+
+dim = 256
+tr_lb = tr_lb.cuda()
+tr_ub = tr_ub.cuda()
+sobol = SobolEngine(dim, scramble=True)
+pert = sobol.draw(repaint_candidates).to(dtype=dtype).cuda()
+pert = tr_lb + (tr_ub - tr_lb) * pert
+tr_lb = tr_lb.cuda()
+tr_ub = tr_ub.cuda()
+# Create a perturbation mask
+prob_perturb = min(20.0 / dim, 1.0)
+mask = (torch.rand(repaint_candidates, dim, dtype=dtype).cuda()) <= prob_perturb
+ind = torch.where(mask.sum(dim=1) == 0)[0]
+mask[ind, torch.randint(0, dim - 1, size=(len(ind),)).cuda()] = 1
+mask = (~mask.cuda()).float()
+
+X_cand = TRC.expand(repaint_candidates, dim).clone()
+
+X_cand = model.ddim_repaint(
+    x_known=X_cand.cuda(),
+    mask=mask,
+    sampling_steps=50,
+    u_steps=10,
+    tr_center=None,
+    tr_halfwidth=None,
+)
+
+extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+print(f"around extinct + no extinct guidance + no tr: {extinct.mean():.3f} +/- {extinct.std():.3f}")
+
+X_cand = model.ddim_repaint(
+    x_known=X_cand.cuda(),
+    mask=mask,
+    sampling_steps=50,
+    u_steps=10,
+    tr_center=None,
+    tr_halfwidth=None,
+    sample_extinct=True,
+    extinct_guidance_scale=1.0,
+)
+
+extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+print(f"around extinct + extinct guidance + no tr: {extinct.mean():.3f} +/- {extinct.std():.3f}")
+
+
+tr_lb = TRC_ONES - TRHW
+tr_ub = TRC_ONES + TRHW
+
+dim = 256
+tr_lb = tr_lb.cuda()
+tr_ub = tr_ub.cuda()
+sobol = SobolEngine(dim, scramble=True)
+pert = sobol.draw(repaint_candidates).to(dtype=dtype).cuda()
+pert = tr_lb + (tr_ub - tr_lb) * pert
+tr_lb = tr_lb.cuda()
+tr_ub = tr_ub.cuda()
+# Create a perturbation mask
+prob_perturb = min(20.0 / dim, 1.0)
+mask = (torch.rand(repaint_candidates, dim, dtype=dtype).cuda()) <= prob_perturb
+ind = torch.where(mask.sum(dim=1) == 0)[0]
+mask[ind, torch.randint(0, dim - 1, size=(len(ind),)).cuda()] = 1
+mask = (~mask.cuda()).float()
+
+X_cand = TRC_ONES.expand(repaint_candidates, dim).clone()
+
+X_cand = model.ddim_repaint(
+    x_known=X_cand.cuda(),
+    mask=mask,
+    sampling_steps=50,
+    u_steps=10,
+    tr_center=None,
+    tr_halfwidth=None,
+)
+
+extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+print(f"around ones + no extinct guidance + no tr: {extinct.mean():.3f} +/- {extinct.std():.3f}")
+
+X_cand = model.ddim_repaint(
+    x_known=X_cand.cuda(),
+    mask=mask,
+    sampling_steps=50,
+    u_steps=10,
+    tr_center=None,
+    tr_halfwidth=None,
+    sample_extinct=True,
+    extinct_guidance_scale=1.0,
+)
+
+extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+print(f"around ones + extinct guidance + no tr: {extinct.mean():.3f} +/- {extinct.std():.3f}")
+
+
+tr_lb = TRC_RAND - TRHW
+tr_ub = TRC_RAND + TRHW
+
+dim = 256
+tr_lb = tr_lb.cuda()
+tr_ub = tr_ub.cuda()
+sobol = SobolEngine(dim, scramble=True)
+pert = sobol.draw(repaint_candidates).to(dtype=dtype).cuda()
+pert = tr_lb + (tr_ub - tr_lb) * pert
+tr_lb = tr_lb.cuda()
+tr_ub = tr_ub.cuda()
+# Create a perturbation mask
+prob_perturb = min(20.0 / dim, 1.0)
+mask = (torch.rand(repaint_candidates, dim, dtype=dtype).cuda()) <= prob_perturb
+ind = torch.where(mask.sum(dim=1) == 0)[0]
+mask[ind, torch.randint(0, dim - 1, size=(len(ind),)).cuda()] = 1
+mask = (~mask.cuda()).float()
+
+X_cand = TRC_RAND.expand(repaint_candidates, dim).clone()
+
+X_cand = model.ddim_repaint(
+    x_known=X_cand.cuda(),
+    mask=mask,
+    sampling_steps=50,
+    u_steps=10,
+    tr_center=None,
+    tr_halfwidth=None,
+)
+
+extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+print(f"around rand + no extinct guidance + no tr: {extinct.mean():.3f} +/- {extinct.std():.3f}")
+
+X_cand = model.ddim_repaint(
+    x_known=X_cand.cuda(),
+    mask=mask,
+    sampling_steps=50,
+    u_steps=10,
+    tr_center=None,
+    tr_halfwidth=None,
+    sample_extinct=True,
+    extinct_guidance_scale=1.0,
+)
+
+extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+print(f"around rand + extinct guidance + no tr: {extinct.mean():.3f} +/- {extinct.std():.3f}")

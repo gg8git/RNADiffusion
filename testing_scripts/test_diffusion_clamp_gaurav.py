@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from rdkit import RDLogger
+from torch.quasirandom import SobolEngine
 
 from model.diffusion_v2 import DiffusionModel
 from model.diffusion_v2.GaussianDiffusion import ExtinctPredictor
@@ -19,7 +20,7 @@ RDLogger.DisableLog("rdApp.*")  # type: ignore
 
 
 ##########################################################
-# Peptide
+# Set Up
 ##########################################################
 model = DiffusionModel.load_from_checkpoint("./data/peptide_diffusion.ckpt")
 model.cuda()
@@ -29,6 +30,7 @@ predictor = ExtinctPredictor.load_from_checkpoint("./data/extinct_predictor.ckpt
 predictor.cuda()
 predictor.freeze()
 
+model.predictor = predictor
 
 def cond_fn_extinct(z: torch.Tensor, *args, **kwargs) -> torch.Tensor:
     with torch.enable_grad():
@@ -62,38 +64,200 @@ TRC = torch.tensor([-0.254,  0.918,  0.553,  0.263, -2.132, -0.162,  2.220,  1.1
          0.621, -0.883,  0.342, -0.805,  1.078, -0.275, -0.489,  0.637,  0.873, -0.162, -1.488, -0.758,  0.117,  0.884,
         -1.072,  0.374, -0.449, -1.410], device='cuda:0').unsqueeze(0)
 # fmt: on
+TRC_ONES = torch.ones(256).to(torch.float32).cuda().unsqueeze(0)
+TRC_RAND = torch.rand(256, dtype=torch.float32, device="cuda").unsqueeze(0)
 
-TRHW = 0.2
+
+##########################################################
+# Peptide Guidance
+##########################################################
 
 # want to compare performance of diff algorithms against different TRs
 
 # TRHWS = [2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.01]
-TRHWS = [1.6, 0.8, 0.4, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625]
+def peptide_guidance():
+    TRHWS = [1.6, 0.8, 0.4, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625]
 
-for trhw in TRHWS:
-    for method in ["midpoint_hw_scaled", "midpoint_hw"]:
-        trials = [
-            (False, method, 2.0),
-        ]
+    for trhw in TRHWS:
+        for method in ["midpoint_hw_scaled", "midpoint_hw"]:
+            trials = [
+                (False, method, 2.0),
+            ]
 
-        for tr_clamp, tr_guidance, tr_guidance_scale in trials:
-            print(f"Results - (halfwidth: {trhw}, guidance method: {method}, scale: {tr_guidance_scale})")
+            for tr_clamp, tr_guidance, tr_guidance_scale in trials:
+                print(f"Results - (halfwidth: {trhw}, guidance method: {method}, scale: {tr_guidance_scale})")
 
-            guide_z = model.ddim_sample_tr_guidance(
-                batch_size=1024,
-                sampling_steps=500,
-                cond_fn=cond_fn_extinct,
-                guidance_scale=1.0,
-                tr_center=TRC,
-                tr_halfwidth=trhw,
-                tr_clamp=tr_clamp,
-                tr_guidance=tr_guidance,
-                tr_guidance_scale=tr_guidance_scale,
-            )
+                guide_z = model.ddim_sample_tr_guidance(
+                    batch_size=1024,
+                    sampling_steps=500,
+                    # cond_fn=cond_fn_extinct,
+                    # guidance_scale=1.0,
+                    tr_center=TRC,
+                    tr_halfwidth=trhw,
+                    tr_clamp=tr_clamp,
+                    tr_guidance=tr_guidance,
+                    tr_guidance_scale=tr_guidance_scale,
+                )
 
-            extinct_preds_guide = (predictor(guide_z).sigmoid() > 0.5).float()
-            print(f"Extinct %: {extinct_preds_guide.mean():.3f} +/- {extinct_preds_guide.std():.3f} ")
-            print(f"Avg dist from center: {(guide_z - TRC).abs().mean():.6f}, std: {(guide_z - TRC).abs().std():.3f}")
+                extinct_preds_guide = (predictor(guide_z).sigmoid() > 0.5).float()
+                print(f"Extinct %: {extinct_preds_guide.mean():.3f} +/- {extinct_preds_guide.std():.3f} ")
+                print(f"Avg dist from center: {(guide_z - TRC).abs().mean():.6f}, std: {(guide_z - TRC).abs().std():.3f}")
 
-            peptides = model.vae.detokenize(model.vae.sample(guide_z, argmax=False))
-            print(f"Sample peptides from guided diffusion: {len(set(peptides))} / {len(peptides)} samples are unique\n")
+                peptides = model.vae.detokenize(model.vae.sample(guide_z, argmax=False))
+                print(f"Sample peptides from guided diffusion: {len(set(peptides))} / {len(peptides)} samples are unique\n")
+
+# peptide_guidance()
+
+
+##########################################################
+# Peptide Repaint
+##########################################################
+
+
+def peptide_repaint():
+    N = 1024
+    x_known = TRC.repeat(N, 1).view(N, model.n_bn, model.d_bn)
+    mask = (torch.rand_like(x_known) > 0.2).float()
+
+    repaint_mask_z = model.ddim_repaint_tr_guidance(
+        x_known=x_known,
+        mask=mask,
+        sampling_steps=50,
+        u_steps=20,
+    )
+
+    extinct_preds_guide_mask = (predictor(repaint_mask_z).sigmoid() > 0.5).float()
+    print(f"Guide No Cond: {extinct_preds_guide_mask.mean():.3f} +/- {extinct_preds_guide_mask.std():.3f}")
+    _tmp = torch.stack([x_known[0].flatten(), repaint_mask_z[0], mask[0].flatten()], dim=0)
+    print(_tmp[:, :10])
+
+
+    ################
+    ### TS
+    ################
+
+    for trc, name in [(TRC, "extinct"), (TRC_ONES, "ones"), (TRC_RAND, "rand")]:
+        TRHW = 0.2
+        repaint_candidates = 128
+        dtype = torch.float32
+        # device = torch.cuda
+
+        tr_lb = trc - TRHW
+        tr_ub = trc + TRHW
+
+        dim = 256
+        tr_lb = tr_lb.cuda()
+        tr_ub = tr_ub.cuda()
+        sobol = SobolEngine(dim, scramble=True)
+        pert = sobol.draw(repaint_candidates).to(dtype=dtype).cuda()
+        pert = tr_lb + (tr_ub - tr_lb) * pert
+        tr_lb = tr_lb.cuda()
+        tr_ub = tr_ub.cuda()
+        # Create a perturbation mask
+        prob_perturb = min(20.0 / dim, 1.0)
+        mask = (torch.rand(repaint_candidates, dim, dtype=dtype).cuda()) <= prob_perturb
+        ind = torch.where(mask.sum(dim=1) == 0)[0]
+        mask[ind, torch.randint(0, dim - 1, size=(len(ind),)).cuda()] = 1
+        mask = (~mask.cuda()).float()
+
+        X_cand = trc.expand(repaint_candidates, dim).clone()
+
+        X_cand = model.ddim_repaint_tr_guidance(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+            tr_center=None,
+            tr_halfwidth=None,
+            tr_clamp=True,
+        )
+
+        extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+        peptides = model.vae.detokenize(model.vae.sample(X_cand, argmax=False))
+        print(f"around {name} + no extinct guidance + no tr: (extinct - {extinct.mean():.3f} +/- {extinct.std():.3f}; dist - {(extinct - trc).abs().mean():.6f} +/- {(extinct - trc).abs().std():.3f}; unique - {len(set(peptides))} / {len(peptides)}")
+
+        X_cand = model.ddim_repaint_tr_guidance(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+            tr_center=trc,
+            tr_halfwidth=0.8,
+            tr_clamp=True,
+            tr_guidance="midpoint_hw",
+            tr_guidance_scale=2.0,
+        )
+
+        extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+        peptides = model.vae.detokenize(model.vae.sample(X_cand, argmax=False))
+        print(f"around {name} + no extinct guidance + 0.8 tr: (extinct - {extinct.mean():.3f} +/- {extinct.std():.3f}; dist - {(extinct - trc).abs().mean():.6f} +/- {(extinct - trc).abs().std():.3f}; unique - {len(set(peptides))} / {len(peptides)}")
+
+        X_cand = model.ddim_repaint_tr_guidance(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+            tr_center=trc,
+            tr_halfwidth=0.2,
+            tr_clamp=True,
+            tr_guidance="midpoint_hw",
+            tr_guidance_scale=2.0,
+        )
+
+        extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+        peptides = model.vae.detokenize(model.vae.sample(X_cand, argmax=False))
+        print(f"around {name} + no extinct guidance + 0.2 tr: (extinct - {extinct.mean():.3f} +/- {extinct.std():.3f}; dist - {(extinct - trc).abs().mean():.6f} +/- {(extinct - trc).abs().std():.3f}; unique - {len(set(peptides))} / {len(peptides)}")
+
+        X_cand = model.ddim_repaint_tr_guidance(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+            tr_center=None,
+            tr_halfwidth=None,
+            tr_clamp=True,
+            sample_extinct=True,
+            extinct_guidance_scale=1.0,
+        )
+
+        extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+        peptides = model.vae.detokenize(model.vae.sample(X_cand, argmax=False))
+        print(f"around {name} + extinct guidance + no tr: (extinct - {extinct.mean():.3f} +/- {extinct.std():.3f}; dist - {(extinct - trc).abs().mean():.6f} +/- {(extinct - trc).abs().std():.3f}; unique - {len(set(peptides))} / {len(peptides)}")
+
+        X_cand = model.ddim_repaint_tr_guidance(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+            tr_center=trc,
+            tr_halfwidth=0.8,
+            tr_clamp=True,
+            tr_guidance="midpoint_hw",
+            tr_guidance_scale=2.0,
+            sample_extinct=True,
+            extinct_guidance_scale=1.0,
+        )
+
+        extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+        peptides = model.vae.detokenize(model.vae.sample(X_cand, argmax=False))
+        print(f"around {name} + extinct guidance + 0.8 tr: (extinct - {extinct.mean():.3f} +/- {extinct.std():.3f}; dist - {(extinct - trc).abs().mean():.6f} +/- {(extinct - trc).abs().std():.3f}; unique - {len(set(peptides))} / {len(peptides)}")
+
+        X_cand = model.ddim_repaint_tr_guidance(
+            x_known=X_cand.cuda(),
+            mask=mask,
+            sampling_steps=50,
+            u_steps=10,
+            tr_center=trc,
+            tr_halfwidth=0.2,
+            tr_clamp=True,
+            tr_guidance="midpoint_hw",
+            tr_guidance_scale=2.0,
+            sample_extinct=True,
+            extinct_guidance_scale=1.0,
+        )
+
+        extinct = (predictor(X_cand).sigmoid() > 0.5).float()
+        peptides = model.vae.detokenize(model.vae.sample(X_cand, argmax=False))
+        print(f"around {name} + extinct guidance + 0.2 tr: (extinct - {extinct.mean():.3f} +/- {extinct.std():.3f}; dist - {(extinct - trc).abs().mean():.6f} +/- {(extinct - trc).abs().std():.3f}; unique - {len(set(peptides))} / {len(peptides)}")
+
+peptide_repaint()

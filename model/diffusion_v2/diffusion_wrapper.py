@@ -391,6 +391,8 @@ class DiffusionModel(L.LightningModule):
         tr_clamp: bool = True,
         tr_guidance: str | None = None,
         tr_guidance_scale: float = 1.0,
+        sample_extinct: bool = False,
+        extinct_guidance_scale: float = 1.0,
     ) -> Tensor:
         """
         Re-painting with DDIM: https://arxiv.org/abs/2201.09865
@@ -440,6 +442,16 @@ class DiffusionModel(L.LightningModule):
                 B_t = (1.0 - alpha_bar_t).sqrt()
 
                 gradient = torch.zeros_like(x_t)
+
+                if sample_extinct:
+                    _x0_hat = A_t * x_t - B_t * v_hat
+
+                    grad = self.cond_fn_extinct(_x0_hat.flatten(1), t_vec)
+                    grad = grad.reshape(x_t.shape)
+                    grad = clip_max_grad(grad, 6 * math.sqrt(self.n_bn * self.d_bn))  # Keep gradient in [-6, 6] ball
+
+                    gradient += (B_t * grad * extinct_guidance_scale)
+                
                 if tr_guidance is not None and tr_center is not None and tr_halfwidth is not None:
                     if tr_guidance == "midpoint":
                         tr_center_vec = tr_center.repeat(B, 1, 1)
@@ -456,7 +468,29 @@ class DiffusionModel(L.LightningModule):
                         grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
 
                         if t < 900:
-                            gradient += ((B_t/A_t) * grad)
+                            gradient += ((B_t/A_t) * grad * tr_guidance_scale)
+                    
+                    elif "midpoint_hw" in tr_guidance:
+                        reverse_interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[1000 - t]
+                        hw_t = tr_halfwidth * reverse_interpolant + 10.0 * (1 - reverse_interpolant)
+
+                        tr_center_vec = tr_center.repeat(B, 1, 1)
+                        mean, _ = self.diffusion.q_sample_dist(tr_center_vec, t_vec)
+                        std = hw_t
+                        
+                        with torch.enable_grad():
+                            x_t = x_t.detach().requires_grad_(True)
+                            logp = Normal(mean, std).log_prob(x_t)
+
+                            s = logp.sum()
+                            (grad,) = torch.autograd.grad(s, x_t, retain_graph=False, create_graph=False)
+
+                        grad = grad.reshape(x_t.shape)
+                        grad = clip_max_grad(grad.detach(), 10 * math.sqrt(self.n_bn * self.d_bn))
+
+                        # v_hat = v_hat - (B/A) * grad * guidance_scale
+                        if t < 900:
+                            gradient += ((B_t/A_t) * grad * tr_guidance_scale)
 
                     elif tr_guidance == "midpoint_dec":
                         tr_center_vec = tr_center.repeat(B, 1, 1)
@@ -474,7 +508,7 @@ class DiffusionModel(L.LightningModule):
 
                         if t < 900:
                             interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
-                            gradient += ((B_t/A_t) * grad * interpolant)
+                            gradient += ((B_t/A_t) * grad * tr_guidance_scale * interpolant)
 
                     elif tr_guidance == "x0_hat":
                         _x0_hat = A_t * x_t - B_t * v_hat
@@ -498,9 +532,9 @@ class DiffusionModel(L.LightningModule):
                         grad = grad.reshape(x_t.shape)
                         grad = clip_max_grad(grad.detach(), 6 * math.sqrt(self.n_bn * self.d_bn))
 
-                        gradient += (B_t * grad)
+                        gradient += (B_t * grad * tr_guidance_scale)
 
-                v_hat = v_hat - tr_guidance_scale * gradient
+                v_hat = v_hat - gradient
 
                 x0_hat = A_t * x_t - B_t * v_hat
                 eps_hat = B_t * x_t + A_t * v_hat
@@ -600,7 +634,7 @@ class DiffusionModel(L.LightningModule):
                 gradient += (B * grad)
             
             if tr_guidance is not None and tr_center is not None and tr_halfwidth is not None:
-                if "midpoint_base" in tr_guidance:
+                if "midpoint" in tr_guidance:
                     interpolant = self.diffusion.sqrt_one_minus_alphas_cumprod[t]
 
                     tr_center_vec = tr_center.repeat(batch_size, 1, 1)

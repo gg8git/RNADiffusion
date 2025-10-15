@@ -33,7 +33,7 @@ class LOLBOStateConstrained:
         bsz=10,
         acq_func="ts",
         sample_extinct=False,
-        extinct_guidance_scale=extinct_guidance_scale,
+        extinct_guidance_scale=1.0,
         use_dsp=False,
         verbose=True,
         task="molecule",
